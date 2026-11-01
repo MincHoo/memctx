@@ -2,9 +2,12 @@
 /**
  * gate.mjs — 发布前质量闸门。
  *
- * 跑 eval.mjs，检查两个硬指标：
- *   1. 召回@K 不得低于 --min-hit（默认 9）
- *   2. 平均名次不得高于 --max-avg（默认 3.0）
+ * 跑 eval.mjs，按两层判定：
+ *   1) 相对层（主判据）：召回不低于上游纯向量，且平均名次不差于上游。
+ *   2) 绝对兜底：召回 ≥ --min-hit，平均名次 ≤ --max-avg（默认 15 = 30 条候选的前一半，宽松）。
+ *
+ * 为什么以相对为主：绝对名次随语料膨胀必然变差（42 条时上游自己就掉到 13.4），
+ * 用固定阈值会把"语料变多"误判成"排序退化"。绝对层只用来发现两边一起崩的情况。
  *
  * 任一项不达标 → 退出码 1，可用于 CI / pre-push。
  *
@@ -27,7 +30,7 @@ const arg = (name, def) => {
 }
 
 const MIN_HIT = Number(arg("--min-hit", "9"))
-const MAX_AVG = Number(arg("--max-avg", "3.0"))
+const MAX_AVG = Number(arg("--max-avg", "15.0"))
 const K = arg("--k", "3")
 const CASES = arg("--cases", "")
 const DIR = arg("--dir", "")
@@ -58,14 +61,32 @@ try {
 }
 
 const { cases, ourHit, ourAvg, upHit, upAvg } = result
+
+// 判定分两层：
+//  1) 相对层（决定成败）：必须不比上游差——召回不低于上游，平均名次不差于上游。
+//     理由：绝对名次会随语料膨胀必然变差（42 条时上游自己就掉到 13.4），
+//     而我们要证明的是「比同类系统更准」，不是「名次一定小于某个常数」。
+//  2) 绝对层（宽松兜底，防"一起烂"）：召回 ≥ MIN_HIT，平均名次 ≤ MAX_AVG。
+//     绝对值只用于发现"两边都崩"的极端情况，不作为主要判据。
+
 const okHit = ourHit >= MIN_HIT
 const okAvg = ourAvg <= MAX_AVG
-const pass = okHit && okAvg
+const relHit = ourHit >= upHit
+const relAvg = ourAvg <= upAvg
+const relBetter = ourHit > upHit || ourAvg < upAvg
+const pass = relHit && relAvg && okHit && okAvg
+const mark = (b) => (b ? "PASS" : "FAIL")
 
 console.log(`gate: ${cases} 用例，topK=${K}`)
-console.log(`  召回：${ourHit} / ${cases}   要求 ≥ ${MIN_HIT}   ${okHit ? "PASS" : "FAIL"}`)
-console.log(`  平均名次：${ourAvg}        要求 ≤ ${MAX_AVG}   ${okAvg ? "PASS" : "FAIL"}`)
-console.log(`  参照基线（纯向量）：召回 ${upHit}/${cases}，平均名次 ${upAvg}`)
+console.log("  相对判定（主判据，对比上游纯向量）")
+console.log(`    召回：${ourHit} vs ${upHit}   ${mark(relHit)}${relHit && !relBetter ? "（持平）" : ""}`)
+console.log(`    平均名次：${ourAvg} vs ${upAvg}   ${mark(relAvg)}`)
+console.log("  绝对兜底（防两边一起烂，不是主判据）")
+console.log(`    召回：${ourHit} / ${cases}   要求 ≥ ${MIN_HIT}   ${mark(okHit)}`)
+console.log(`    平均名次：${ourAvg}        要求 ≤ ${MAX_AVG}   ${mark(okAvg)}`)
+if (relHit && relAvg && !relBetter && !(okHit && okAvg)) {
+  console.log("  提示：相对指标持平，但绝对兜底不达标——检查语料是否过脏或检索是否退化。")
+}
 console.log(pass ? "\n=> 通过" : "\n=> 未通过")
 
 process.exit(pass ? 0 : 1)
