@@ -4,7 +4,7 @@
 >
 > 中文说明：[README.zh-CN.md](./README.zh-CN.md) · 开发日志（中文）：[NOTES.md](./NOTES.md)
 
-`opencode-mem` gives you two bad options: inject the newest memories (stable prefix, stale answers) or re-run vector search into the system prompt every turn (fresh, but the prefix changes and the whole transcript is re-billed). This plugin takes a third path:
+`opencode-mem` gives you two options: inject the newest memories (stable prefix, stale answers) or re-run vector search into the system prompt every turn (fresh, but the prefix changes and the whole transcript is re-billed). This plugin takes a third path:
 
 - **Stable block** — computed once from the session's first message, cached per session, identical on every request → prefix cache stays intact.
 - **Per-turn tail** — a small block appended to the *user message* (not the system prompt), so only the new message differs. Freshness without a re-bill.
