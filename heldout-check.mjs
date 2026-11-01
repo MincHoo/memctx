@@ -28,7 +28,7 @@ const arg = (name, def) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : def
 }
 const DIR = arg("--dir", process.cwd())
-const FILES = argv.filter((a, i) => !a.startsWith("--") && argv[i - 1] !== "--dir" && argv[i - 1] !== "--merge")
+const FILES = argv.filter((a, i) => !a.startsWith("--") && !String(argv[i - 1] ?? "").startsWith("--"))
 
 const hash = createHash("sha256").update(`path:${normalize(DIR)}`).digest("hex").slice(0, 16)
 const TAG = arg("--tag", `opencode_project_${hash}`)
@@ -56,7 +56,8 @@ const records = (() => {
 const errors = []
 const warnings = []
 const merged = []
-const seenTarget = new Set()
+const seenTarget = new Map()
+const REPEAT_MAX = Number(arg("--repeat", "1"))
 const seenQ = new Set()
 const layerCount = {}
 const perFile = []
@@ -101,15 +102,16 @@ for (const file of FILES) {
       errors.push(`${where}: 目标记忆已被取代（validUntil）→ ${target.id}`)
       continue
     }
-    if (seenTarget.has(target.id)) {
-      errors.push(`${where}: targetId 与前面重复 → ${target.id}`)
+    const used = seenTarget.get(target.id) ?? 0
+    if (used >= REPEAT_MAX) {
+      errors.push(`${where}: targetId 重复超过 ${REPEAT_MAX} 次 → ${target.id}`)
       continue
     }
     if (seenQ.has(q)) {
       errors.push(`${where}: 问题重复 → 「${q}」`)
       continue
     }
-    seenTarget.add(target.id)
+    seenTarget.set(target.id, used + 1)
     seenQ.add(q)
     stat.ok++
     const layer = String(c.layer ?? "unknown")
@@ -125,6 +127,7 @@ for (const s of perFile) {
   const flag = s.ok === s.n ? "ok" : "有错误"
   console.log(`  ${s.file}: ${s.ok}/${s.n} 通过（${flag}）`)
 }
+console.log(`  覆盖目标: ${seenTarget.size} 条不同记忆；允许每目标最多 ${REPEAT_MAX} 题`)
 console.log("\n  层配比:", Object.entries(layerCount).map(([k, v]) => `${k}=${v}`).join("  ") || "（无）")
 if (warnings.length) {
   console.log("\n  警告:")

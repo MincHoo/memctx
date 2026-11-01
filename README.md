@@ -201,6 +201,8 @@ node gate.mjs --no-default --cases fixtures/heldout-2026-11.json --dir <project>
 
 Rules: validate before use, run **once per release**, never tune on it, and record the result plus the file SHA-256. See `NOTES.md` §12.6.
 
+Results so far (v0.2.0): first set 33 cases → 17 vs 12 (p = 0.18); second set 60 cases → **46 vs 32 (76.7% vs 53.3%)**, average rank 10.67 vs 21.32, McNemar **p ≈ 0.0013**. Both sets are burned.
+
 Two findings worth knowing before you tune anything:
 
 - **Generic "common knowledge" memories hurt.** Injecting 20 sensible engineering facts dropped recall@3 `11 → 10` and average rank `2.2 → 9.7`. They look relevant to every query, so they crowd out real answers.

@@ -42,7 +42,7 @@ This release also fixes a parameter drift between the gate and the live plugin.
 | **2-hop + BM25 (default)** | **11; 2.93** | **9; 4.53** |
 
 - PPR and MMR remain off; see `NOTES.md` §12 for the full A/B tables.
-- Held-out set is **not executed in this release** — it is reserved for the next published build.
+- Held-out evaluation (executed 2026-11-01): **46/60 vs 32/60** on a second, independent 60-case set (coverage 50 memories), recall@3 **76.7% vs 53.3%**, average rank **10.67 vs 21.32**, McNemar **p ≈ 0.0013**. The first 33-case set scored 17/33 vs 12/33 (p = 0.18). Both sets are now burned; the next release needs a new one.
 
 ### Known limitations
 
