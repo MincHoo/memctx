@@ -37,6 +37,8 @@ if (CASES) args.push("--cases", CASES)
 // 关键：eval 用 cwd 推项目 tag。从插件目录跑 npm 脚本时 cwd 是插件目录，
 // 必须显式传 --dir，否则一个候选都检索不到。
 if (DIR) args.push("--dir", DIR)
+// 只跑指定用例集（不叠加内置 14 例），用于盲测回归
+if (process.argv.includes("--no-default")) args.push("--no-default")
 
 let raw
 try {

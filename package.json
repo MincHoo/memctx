@@ -20,6 +20,7 @@
   },
   "scripts": {
     "gate": "node gate.mjs",
+    "gate:blind": "node gate.mjs --no-default --cases fixtures/cases-blind.json",
     "graph": "node graph.mjs",
     "probe": "node probe.mjs",
     "check": "node check.mjs",
