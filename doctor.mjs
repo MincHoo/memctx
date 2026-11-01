@@ -176,12 +176,18 @@ if (existsSync(shard)) {
     db.close()
 
     const live = rows.filter((r) => r.type !== "prompt") // prompt 是上游捕获的用户提问，检索时过滤，不算缺口
-    const noVec = rows.filter((r) => !r.vector || r.vector.length !== 4096).length
+    // 维度不写死：换嵌入模型后是 384/768/1024 都可能，只要求「非空、4 字节对齐、全库一致」
+    const vecLens = [...new Set(rows.map((r) => (r.vector ? r.vector.length : 0)))]
+    const badVec = rows.filter((r) => !r.vector || r.vector.length === 0 || r.vector.length % 4 !== 0).length
+    const mixedDim = vecLens.filter((n) => n > 0).length > 1
+    const dims = vecLens.filter((n) => n > 0).map((n) => n / 4)
     const emptyText = rows.filter((r) => !String(r.content ?? "").trim()).length
     const noTag = live.filter((r) => !String(r.tags ?? "").trim()).length
     const noType = live.filter((r) => !r.type).length
 
-    noVec > 0 ? bad("向量完整性", `${noVec} 条向量缺失或维度异常`) : ok("向量完整性", `${rows.length}/${rows.length}`)
+    badVec === 0 && !mixedDim
+      ? ok("向量完整性", `${rows.length}/${rows.length}（${dims.join("/") || "?"} 维）`)
+      : bad("向量完整性", badVec ? `${badVec} 条向量缺失或长度异常` : `维度不一致：${dims.join(" / ")}（换模型后需迁移）`)
     emptyText > 0 ? bad("正文完整性", `${emptyText} 条正文为空`) : null
 
     const tagRatio = live.length ? (live.length - noTag) / live.length : 1

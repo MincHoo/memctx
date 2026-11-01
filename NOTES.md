@@ -47,6 +47,25 @@
 - 若上游分数分布明显变化（如上游平均名次突然优于我们），先怀疑**上游变强**而不是我们变弱：把两组数字都记进第 10 节，再决定是否调权重——**不要为了变绿去调阈值**。
 - 复核记录写在第 10 节末尾的「基线变更日志」，只记日期、上游版本、两组数字。
 
+### 换嵌入模型（操作手册）
+
+改 `~/.config/opencode/opencode-mem.jsonc` 后**必须完全退出并重开 OpenCode**（嵌入服务在插件加载时读配置，改文件不热生效），然后：
+
+```powershell
+node switch-embedding.mjs --dir "C:\Users\Cros\Documents\默认项目" --dry-run   # 先看检测结果
+node switch-embedding.mjs --dir "C:\Users\Cros\Documents\默认项目"             # 默认 strategy=re-embed
+```
+
+它会：检测维度不匹配 → 调 `/api/migration/run` 重新嵌入 → 重建邻接表 → 打印验收命令。
+
+三个坑：
+
+1. **维度必须显式写**：`Xenova/multilingual-e5-small` 不在上游 `dimensionMap` 里，不写 `embeddingDimensions: 384` 会被当成 768，向量错位、检索全乱。
+2. **e5 系列必须带前缀**：`embeddingQueryPrefix: "query: "`、`embeddingDocumentPrefix: "passage: "`，池化用 `mean`；bge-m3 是 `cls`。
+3. **邻接表阈值要重算**：`graph.mjs` 的 `--min 0.5` 是按 bge-m3 的相似度分布定的，换模型后先看 `pairs>=` 直方图再调。
+
+回滚：配置改回 `Xenova/bge-m3`（并删掉 dimensions/pooling/prefix 三行覆盖）→ 重启 → 从 `~/.opencode-mem/backup-*/project_*_shard_0.db` 恢复分片。
+
 ### 接手要避开的坑
 
 - **桌面版里 `process.execPath` 是 `opencode-cli.exe`，不是 node**：拿它去 spawn 一个 `.mjs` 只会得到一段 CLI 帮助文本（日志里表现为 `graph refresh failed: DESCRIPTION`）。要用 `node`（或 `MEMCTX_NODE` 指定绝对路径）。
