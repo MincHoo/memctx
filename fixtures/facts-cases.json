@@ -1,0 +1,7 @@
+[
+  { "q": "插件可以挂哪些 hook", "expect": "hook 清单" },
+  { "q": "memories 表有哪些列", "expect": "memories 表结构" },
+  { "q": "怎么关掉上游的自动注入", "expect": "关闭 opencode-mem 的自动注入" },
+  { "q": "怎么手动触发一次压缩", "expect": "手动触发压缩" },
+  { "q": "改插件代码需要重启吗", "expect": "热重载" }
+]

@@ -1,0 +1,49 @@
+{
+  "name": "opencode-memctx",
+  "version": "0.1.0",
+  "description": "Better context injection for opencode-mem: stable block + per-turn tail, graph rerank, cache-friendly by design",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-mem",
+    "memory",
+    "llm-context",
+    "prompt-cache"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.2.5"
+  },
+  "scripts": {
+    "gate": "node gate.mjs",
+    "graph": "node graph.mjs",
+    "probe": "node probe.mjs",
+    "check": "node check.mjs",
+    "seed": "node seed.mjs",
+    "test": "node test.mjs",
+    "doctor": "node doctor.mjs"
+  },
+  "files": [
+    "index.ts",
+    "lib/store.mjs",
+    "doctor.mjs",
+    "gate.mjs",
+    "graph.mjs",
+    "probe.mjs",
+    "tokens.mjs",
+    "check.mjs",
+    "seed.mjs",
+    "experiment.mjs",
+    "tag.mjs",
+    "README.md",
+    "README.zh-CN.md",
+    "NOTES.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/release-v0.1.0.md"
+  ]
+}

@@ -1,0 +1,36 @@
+[
+  { "content": "稳定块在会话首轮由第一条用户消息检索 top-8 生成，整场保持不变以保护前缀缓存。", "tags": ["architecture", "cache"], "kind": "decision", "condition": "长会话且提示词缓存计费", "source": "index.ts" },
+  { "content": "动态小节每轮按当前问题检索，排除稳定块已有条目，最多补 3 条，追加到用户消息尾部。", "tags": ["architecture", "injection"], "kind": "decision", "condition": "需要每轮新鲜度时", "source": "index.ts" },
+  { "content": "打分公式为 0.5 内容 + 0.2 标签 + 0.15 关键词 + 0.15 图分，缺项按剩余权重归一。", "tags": ["architecture", "scoring"], "kind": "decision", "condition": "universal", "source": "index.ts" },
+  { "content": "时间衰减按 0.5 的（天数/180）次方计算，pin 住的记忆不参与衰减。", "tags": ["architecture", "decay"], "kind": "decision", "condition": "记忆超过数周未更新时", "source": "index.ts" },
+
+  { "content": "锚点漂移判定为连续两轮最相关记忆不在稳定块内，重锚上限每会话三次。", "tags": ["architecture", "reanchor"], "kind": "decision", "condition": "长会话换了话题", "source": "index.ts" },
+  { "content": "压缩时注入 5 条记忆快照，目的是让摘要别丢结论，而不是给模型看。", "tags": ["architecture", "compaction"], "kind": "decision", "condition": "会话触发压缩前", "source": "index.ts" },
+  { "content": "邻接表由离线脚本生成，插件按 mtime 懒加载，60 秒内生效。", "tags": ["architecture", "graph"], "kind": "technical", "condition": "需要图重排时", "source": "lib/store.mjs" },
+  { "content": "图分需要阻尼系数 0.5，否则相邻节点互相抬轿子会把目标顶下去。", "tags": ["architecture", "graph", "pitfall"], "kind": "pitfall", "condition": "启用图分时", "source": "eval.mjs" },
+
+  { "content": "本地嵌入模型用 bge-m3，1024 维 q8 量化，中文检索可用。", "tags": ["embedding", "bge-m3"], "kind": "env", "condition": "本地检索且中文查询", "source": "opencode-mem.jsonc" },
+  { "content": "早期用英文嵌入模型时中文查询全部返回 0，换成多语言模型才恢复。", "tags": ["embedding", "pitfall"], "kind": "pitfall", "condition": "中文查询为主", "source": "实测" },
+  { "content": "上游检索接口是 GET /api/search，需要 x-opencode-mem-token 请求头。", "tags": ["api", "search"], "kind": "technical", "condition": "调用上游检索时", "source": "web-server.js" },
+  { "content": "不带 tag 参数时检索会遍历所有分片的所有项目，容易混入别的项目记忆。", "tags": ["api", "pitfall", "scoping"], "kind": "pitfall", "condition": "存在多个项目分片时", "source": "api-handlers.js" },
+
+  { "content": "记忆的 createdAt 是 ISO 字符串，直接 Number 会得到 NaN 并静默破坏时间衰减。", "tags": ["pitfall", "parsing"], "kind": "pitfall", "condition": "任何读取记忆时间的代码", "source": "实测" },
+  { "content": "余弦相似度在本地计算，读 vector 列的 4096 字节即 1024 个 float32。", "tags": ["retrieval", "cosine"], "kind": "technical", "condition": "离线算邻接表时", "source": "graph.mjs" },
+  { "content": "同域中文文本的相似度基线偏高，0.5 阈值几乎全连，取 0.68 更合理。", "tags": ["retrieval", "threshold"], "kind": "technical", "condition": "小规模记忆库", "source": "check.mjs" },
+  { "content": "检索结果会混入原始提问条目，需要按类型过滤掉 prompt 类噪声。", "tags": ["retrieval", "noise"], "kind": "pitfall", "condition": "注入前过滤时", "source": "index.ts" },
+
+  { "content": "超过 100KB 的文本不得整体读入，先用 grep 定位行号再读区间。", "tags": ["process", "reading"], "kind": "preference", "condition": "处理大文件", "source": "AGENTS.md" },
+  { "content": "工具输出被截断时先看预览，需要细节再按行区间读取。", "tags": ["process", "output"], "kind": "preference", "condition": "命令输出过长", "source": "AGENTS.md" },
+  { "content": "写记忆前先检索，相似度达到 0.75 就跳过，避免重复条目。", "tags": ["process", "dedupe"], "kind": "preference", "condition": "每次写入前", "source": "AGENTS.md" },
+  { "content": "破坏性操作执行前必须说明影响并等待确认。", "tags": ["process", "safety"], "kind": "preference", "condition": "硬重置、强推、批量删除", "source": "AGENTS.md" },
+
+  { "content": "上游仓库是 MIT 许可，发布前需要保留版权声明并锁版本。", "tags": ["release", "license"], "kind": "decision", "condition": "对外发布时", "source": "package.json" },
+  { "content": "插件以本地目录形式加载，配置里写绝对路径即可，不需要编译。", "tags": ["release", "packaging"], "kind": "technical", "condition": "V2 插件加载", "source": "opencode.json" },
+  { "content": "发布前必须跑质量闸门，召回或平均名次退步就不发。", "tags": ["release", "gate"], "kind": "decision", "condition": "每次发布", "source": "gate.mjs" },
+  { "content": "改插件代码会触发热重载并清空会话缓存，会导致下一轮全量重算。", "tags": ["release", "pitfall"], "kind": "pitfall", "condition": "开发调试时", "source": "实测" },
+
+  { "content": "周末去菜市场买了西红柿和鸡蛋。", "tags": ["life"], "kind": "capture", "condition": "无", "source": "闲聊" },
+  { "content": "小区门口的咖啡店换了新豆子，酸度比之前高。", "tags": ["life"], "kind": "capture", "condition": "无", "source": "闲聊" },
+  { "content": "跑步五公里配速稳定在六分半。", "tags": ["life"], "kind": "capture", "condition": "无", "source": "闲聊" },
+  { "content": "阳台的绿萝需要每周浇水一次。", "tags": ["life"], "kind": "capture", "condition": "无", "source": "闲聊" }
+]
