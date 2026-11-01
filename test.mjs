@@ -52,6 +52,38 @@ check("写入两条记录", Object.keys(recs).length === 2, `count=${Object.keys
 check("supersedes 让旧记录带上 validUntil", Boolean(recs.mem_a?.validUntil))
 check("字段保留", recs.mem_b.kind === "pitfall" && recs.mem_b.source === "b.ts")
 
+// 结构边：只进 sidecar，合并去重、拒非法、封顶 5 条
+store.upsertRecord("mem_c", {
+  kind: "technical",
+  condition: "条件C",
+  source: "c.ts",
+  links: [
+    { to: "mem_a", rel: "depends", label: "存储层" },
+    { to: "mem_a", rel: "depends", label: "存储层" }, // 重复，应去重
+    { to: "mem_b", rel: "unknown" }, // 非法 rel，应丢弃
+  ],
+})
+const recC = store.loadRecords().mem_c
+check("links 去重后剩 1 条", recC?.links?.length === 1, `links=${JSON.stringify(recC?.links)}`)
+check("非法 rel 被丢弃", recC?.links?.[0]?.rel === "depends")
+
+store.upsertRecord("mem_c", { kind: "technical", condition: "条件C2", source: "c.ts" })
+check("未给 links 时保留旧边", store.loadRecords().mem_c?.links?.length === 1)
+
+store.upsertRecord("mem_c", {
+  kind: "technical",
+  condition: "条件C3",
+  source: "c.ts",
+  links: Array.from({ length: 8 }, (_, i) => ({ to: `mem_x${i}`, rel: "related" })),
+})
+check("links 封顶 5 条", store.loadRecords().mem_c?.links?.length === 5, `n=${store.loadRecords().mem_c?.links?.length}`)
+check(
+  "渲染行只取前 3 条且带中文关系",
+  store.formatLinks(store.loadRecords().mem_c?.links)?.split("；").length === 3,
+  store.formatLinks(store.loadRecords().mem_c?.links),
+)
+check("无 links 时渲染返回 null", store.formatLinks(undefined) === null)
+
 // 行为边：i、j 同轮出现 2 次，各自还在别的轮出现 → Jaccard = 2/(3+2-2)
 store.appendUsage("s1", "t1", ["x", "y"])
 store.appendUsage("s1", "t2", ["x", "y"])

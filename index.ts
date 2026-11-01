@@ -20,7 +20,9 @@ import {
   behavioralEdges,
   loadRecords,
   loadUsage,
+  formatLinks,
   mergeEdges,
+  normalizeLinks,
   upsertRecord,
 } from "./lib/store.mjs"
 
@@ -397,6 +399,9 @@ function render(marker: string, scored: Scored[], title: string): string {
     }
     const tags = Array.isArray(it?.tags) ? it.tags.join(", ") : it?.tags
     if (tags) lines.push(`   ↳ tags: ${tags}`)
+    // 结构边：只在 sidecar 里，随条目一起渲染，给模型判断"这条从哪来、被谁改过"
+    const linkLine = formatLinks(rec?.links)
+    if (linkLine) lines.push(`   ↳ 关联: ${linkLine}`)
   })
   return lines.join("\n")
 }
@@ -624,6 +629,24 @@ export default Plugin.define({
                 condition: { type: "string", description: "这条在什么条件下成立；无条件写 universal" },
                 source: { type: "string", description: "来源：文件路径、会话 id 或实测" },
                 tags: { type: "array", items: { type: "string" }, description: "2-5 个小写标签" },
+                links: {
+                  type: "array",
+                  description:
+                    "结构边（可选，最多 5 条）：显式声明与其它记忆的关系。只会存进 sidecar，不写上游库。",
+                  items: {
+                    type: "object",
+                    properties: {
+                      to: { type: "string", description: "目标记忆 id（mem_ 开头）" },
+                      rel: {
+                        type: "string",
+                        enum: ["supersedes", "depends", "related"],
+                        description: "supersedes=取代；depends=依赖其结论；related=同主题",
+                      },
+                      label: { type: "string", description: "可选，目标记忆的短标题（≤24 字）" },
+                    },
+                    required: ["to", "rel"],
+                  },
+                },
                 supersedes: { type: "string", description: "被本条取代的旧记忆 id（可选）" },
               },
               required: ["content", "kind", "condition", "source"],
@@ -652,6 +675,14 @@ export default Plugin.define({
               if (condition.length > 60) problems.push("condition 太长（>60 字）")
               if (!source) problems.push("source 必填（文件路径 / 会话 id / 实测）")
               if (tags.length < 2 || tags.length > 5) problems.push(`tags 需要 2–5 个（当前 ${tags.length}）`)
+              // 结构边：只进 sidecar，不写上游库；非法项直接拒写而不是静默丢弃
+              const rawLinks = Array.isArray(input.links) ? input.links : []
+              const links = normalizeLinks(rawLinks)
+              if (rawLinks.length > 0 && !links) {
+                problems.push(
+                  "links 格式不合法：每项需要 to（mem_ 开头）与 rel（supersedes/depends/related），最多 5 条",
+                )
+              }
               if (problems.length > 0) {
                 return { content: `拒绝写入：\n- ${problems.join("\n- ")}` }
               }
@@ -701,11 +732,13 @@ export default Plugin.define({
                   condition: input.condition,
                   source: input.source,
                   supersedes: input.supersedes,
+                  links: links ?? undefined,
                 })
                 structAt = 0 // 让下一次渲染立刻看到新字段
                 return {
                   content:
                     `已写入 ${id}（kind=${input.kind}` +
+                    `${links ? `，关联 ${links.length} 条` : ""}` +
                     `${input.supersedes ? `，取代 ${input.supersedes}` : ""}）`,
                 }
               } catch (error) {

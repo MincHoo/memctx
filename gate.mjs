@@ -29,7 +29,7 @@ const arg = (name, def) => {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def
 }
 
-const MIN_HIT = Number(arg("--min-hit", "9"))
+const MIN_HIT_ARG = arg("--min-hit", "")
 const MAX_AVG = Number(arg("--max-avg", "15.0"))
 const K = arg("--k", "3")
 const CASES = arg("--cases", "")
@@ -61,6 +61,8 @@ try {
 }
 
 const { cases, ourHit, ourAvg, upHit, upAvg } = result
+// 召回地板也随用例数走（默认 50%），因为"召回@3 的绝对值"同样会随语料增长而下降
+const MIN_HIT = MIN_HIT_ARG ? Number(MIN_HIT_ARG) : Math.ceil(cases * 0.5)
 
 // 判定分两层：
 //  1) 相对层（决定成败）：必须不比上游差——召回不低于上游，平均名次不差于上游。
@@ -74,16 +76,18 @@ const okAvg = ourAvg <= MAX_AVG
 const relHit = ourHit >= upHit
 const relAvg = ourAvg <= upAvg
 const relBetter = ourHit > upHit || ourAvg < upAvg
-const pass = relHit && relAvg && okHit && okAvg
+// 平均名次只做参考、不参与判定：它不是稳定量（语料每加一条，旧目标的绝对名次就会后移），
+// 拿它当绝对阈值会把"记忆变多"误判成"排序退化"。绝对层只保留召回地板。
+const pass = relHit && relAvg && okHit
 const mark = (b) => (b ? "PASS" : "FAIL")
 
 console.log(`gate: ${cases} 用例，topK=${K}`)
 console.log("  相对判定（主判据，对比上游纯向量）")
 console.log(`    召回：${ourHit} vs ${upHit}   ${mark(relHit)}${relHit && !relBetter ? "（持平）" : ""}`)
 console.log(`    平均名次：${ourAvg} vs ${upAvg}   ${mark(relAvg)}`)
-console.log("  绝对兜底（防两边一起烂，不是主判据）")
+console.log("  绝对兜底（只保留召回地板，防两边一起烂）")
 console.log(`    召回：${ourHit} / ${cases}   要求 ≥ ${MIN_HIT}   ${mark(okHit)}`)
-console.log(`    平均名次：${ourAvg}        要求 ≤ ${MAX_AVG}   ${mark(okAvg)}`)
+console.log(`    平均名次：${ourAvg}  （参考值 ≤ ${MAX_AVG}，不参与判定）   ${okAvg ? "在范围内" : "已超出，仅提示"}`)
 if (relHit && relAvg && !relBetter && !(okHit && okAvg)) {
   console.log("  提示：相对指标持平，但绝对兜底不达标——检查语料是否过脏或检索是否退化。")
 }
