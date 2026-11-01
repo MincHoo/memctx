@@ -67,4 +67,4 @@ it takes over context injection so memories stay fresh **without** invalidating 
 - No fork: the upstream database is opened read-only by the offline tools and never written by the plugin.
 - Requires OpenCode ≥ 2.2.5 (V2 plugin API), `opencode-mem` 2.39.x with its web server enabled, Node ≥ 22.5.
 
-[0.1.0]: https://github.com/<owner>/opencode-memctx/releases/tag/v0.1.0
+[0.1.0]: https://github.com/MincHoo/memctx/releases/tag/v0.1.0

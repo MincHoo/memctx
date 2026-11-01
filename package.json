@@ -45,5 +45,13 @@
     "LICENSE",
     "CHANGELOG.md",
     "docs/release-v0.1.0.md"
-  ]
+  ],
+  "homepage": "https://github.com/MincHoo/memctx#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MincHoo/memctx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MincHoo/memctx/issues"
+  }
 }
