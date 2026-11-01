@@ -9,6 +9,7 @@
  */
 import { readFileSync, existsSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
+import { DatabaseSync } from "node:sqlite"
 import { homedir } from "node:os"
 import { join, normalize, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -163,6 +164,56 @@ if (existsSync(RECORDS)) {
   }
 } else {
   info0("结构化记录", "0 条（用 memctx_add 写过才会有）")
+}
+
+// 7.5 数据完整性：向量/正文/标签/类型/图覆盖/孤儿记录（只读，不改数据）
+if (existsSync(shard)) {
+  try {
+    const db = new DatabaseSync(shard, { readOnly: true })
+    const rows = db
+      .prepare("select id, type, content, tags, vector from memories where deleted_at is null")
+      .all()
+    db.close()
+
+    const live = rows.filter((r) => r.type !== "prompt") // prompt 是上游捕获的用户提问，检索时过滤，不算缺口
+    const noVec = rows.filter((r) => !r.vector || r.vector.length !== 4096).length
+    const emptyText = rows.filter((r) => !String(r.content ?? "").trim()).length
+    const noTag = live.filter((r) => !String(r.tags ?? "").trim()).length
+    const noType = live.filter((r) => !r.type).length
+
+    noVec > 0 ? bad("向量完整性", `${noVec} 条向量缺失或维度异常`) : ok("向量完整性", `${rows.length}/${rows.length}`)
+    emptyText > 0 ? bad("正文完整性", `${emptyText} 条正文为空`) : null
+
+    const tagRatio = live.length ? (live.length - noTag) / live.length : 1
+    tagRatio >= 0.8
+      ? ok("标签覆盖率", `${live.length - noTag}/${live.length}（${Math.round(tagRatio * 100)}%）`)
+      : warn("标签覆盖率", `${live.length - noTag}/${live.length} 条有标签；无标签的记忆排序会吃亏`)
+
+    if (noType > live.length * 0.5) info0("类型缺失", `${noType}/${live.length} 条 type 为空（多为自动捕获，不影响检索）`)
+
+    if (existsSync(NEIGHBORS)) {
+      try {
+        const g = JSON.parse(readFileSync(NEIGHBORS, "utf-8"))
+        const known = new Set(Object.keys(g?.neighbors ?? {}))
+        const missing = live.filter((r) => !known.has(r.id)).length
+        const ratio = live.length ? missing / live.length : 0
+        missing === 0
+          ? ok("邻接表覆盖", `${known.size} 节点，无缺口`)
+          : missing >= 10 || ratio >= 0.2
+            ? warn("邻接表滞后", `${missing} 条未覆盖（≥10 或 ≥20% 会自动重算；也可手动 node graph.mjs --tag ${tag}）`)
+            : ok("邻接表覆盖", `${known.size} 节点，${missing} 条待覆盖（未达重算阈值）`)
+
+        const recs = existsSync(RECORDS) ? JSON.parse(readFileSync(RECORDS, "utf-8")) : {}
+        const ids = new Set(rows.map((r) => r.id))
+        const orphans = Object.keys(recs).filter((id) => !ids.has(id)).length
+        orphans > 0 ? warn("孤儿记录", `${orphans} 条结构化记录找不到对应记忆`) : ok("记录引用", "无孤儿")
+      } catch {
+        /* 邻接表本身已在上面单独检查 */
+      }
+    }
+  } catch (e) {
+    warn("数据完整性", `读取分片失败：${String(e).slice(0, 60)}`)
+  }
 }
 
 if (existsSync(USAGE)) {
