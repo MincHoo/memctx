@@ -49,6 +49,7 @@
 
 ### 接手要避开的坑
 
+- **桌面版里 `process.execPath` 是 `opencode-cli.exe`，不是 node**：拿它去 spawn 一个 `.mjs` 只会得到一段 CLI 帮助文本（日志里表现为 `graph refresh failed: DESCRIPTION`）。要用 `node`（或 `MEMCTX_NODE` 指定绝对路径）。
 - API 的 `createdAt` 是 ISO 字符串；`Number()` 会得到 NaN，静默破坏时间衰减。
 - `/api/search` 不带 `tag` 会检索**所有项目**的分片（曾把合成数据混进真实召回）。
 - 改 `index.ts` 会热重载并清空会话稳定块，每改一次多付一轮全量重算。

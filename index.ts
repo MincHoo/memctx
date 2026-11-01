@@ -460,10 +460,13 @@ export default Plugin.define({
 
     // 邻接表增量刷新：未覆盖的记忆够多（≥10 条或 ≥20%）才重算，否则脚本自己退出。
     // 放后台跑，不阻塞首轮检索；失败只记日志，不影响对话。
+    // 注意：桌面版里 process.execPath 是 opencode-cli.exe，不能拿来跑 .mjs，
+    // 必须用真实的 node（可用 MEMCTX_NODE 指定绝对路径）。
     if (tag && process.env.MEMCTX_GRAPH_REFRESH !== "0") {
       try {
+        const nodeBin = process.env.MEMCTX_NODE ?? "node"
         const child = spawn(
-          process.execPath,
+          nodeBin,
           [join(dirname(fileURLToPath(import.meta.url)), "graph.mjs"), "--if-stale", "--tag", tag],
           { detached: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
         )
@@ -473,7 +476,7 @@ export default Plugin.define({
         child.on("close", (code) => {
           const line = out.trim().split("\n").filter(Boolean).pop() ?? ""
           if (/^stale:|^fresh:/.test(line)) log(`graph refresh: ${line}`)
-          else if (code !== 0) log(`graph refresh failed: ${out.trim().slice(0, 200)}`)
+          else if (code !== 0) log(`graph refresh failed(code=${code}, exe=${process.execPath}): ${out.trim().slice(0, 400)}`)
         })
         child.on("error", (e) => log(`graph refresh spawn error: ${String(e)}`))
         child.unref()
