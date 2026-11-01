@@ -32,6 +32,7 @@ This release also fixes a parameter drift between the gate and the live plugin.
 
 - **Upstream `deleted_at` loss during re-embed**: opencode-mem 2.39.0 rebuilds shards without selecting `deleted_at`, silently resurrecting every soft-deleted memory (613 rows across 3 shards in our run). The plugin can't prevent it, but the migration helper now detects, reports and can restore it.
 - **Gate/plugin parameter drift**: gate numbers were measured with eval's own defaults; they now come from the same defaults as the live plugin.
+- `gate.mjs` now also prints **recall@8** (the stable block uses 8 slots) and **per-layer recall** when the case file carries a `layer` field.
 
 ### Measured (51–52 memories, multilingual-e5-small)
 

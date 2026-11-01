@@ -65,7 +65,7 @@ try {
   process.exit(2)
 }
 
-const { cases, ourHit, ourAvg, upHit, upAvg, ourHits = [], upHits = [] } = result
+const { cases, ourHit, ourAvg, upHit, upAvg, ourHits = [], upHits = [], byLayer = {}, at8 = null } = result
 
 // Wilson 95% 置信区间：33 条用例时一条就是 3 个百分点，必须给区间
 function wilson(x, n, z = 1.96) {
@@ -136,6 +136,19 @@ if (ourHits.length === cases && upHits.length === cases) {
     `    McNemar：仅我们命中 ${onlyOurs}，仅上游命中 ${onlyUp}，p=${p.toFixed(2)}` +
       (p >= 0.05 ? "（差异不显著）" : "（差异显著）"),
   )
+}
+
+if (at8 && typeof at8.ours === "number") {
+  console.log("  注入水位（稳定块实际用 8 条）")
+  console.log(`    recall@8：我们 ${at8.ours}/${cases}，上游 ${at8.up}/${cases}`)
+}
+
+const layerKeys = Object.keys(byLayer)
+if (layerKeys.length > 0 && !layerKeys.every((k) => k === "default")) {
+  console.log(`  分层召回@${K}（我们 / 上游）`)
+  for (const [layer, v] of Object.entries(byLayer)) {
+    console.log(`    ${String(layer).padEnd(10)} ${v.ours}/${v.n} vs ${v.up}/${v.n}`)
+  }
 }
 if (relHit && relAvg && !relBetter && !(okHit && okAvg)) {
   console.log("  提示：相对指标持平，但绝对兜底不达标——检查语料是否过脏或检索是否退化。")

@@ -236,9 +236,13 @@ let upPos = 0
 let ourPos = 0
 const ourHits = []
 const upHits = []
+const byLayer = {}
+let our8 = 0
+let up8 = 0
 const rows = []
 
-for (const { q, expect } of ALL) {
+for (const c of ALL) {
+  const { q, expect } = c
   const base = await search(q)
   const items = expand(base, q)
   const qg = grams(q)
@@ -256,6 +260,13 @@ for (const { q, expect } of ALL) {
   if (po >= 0 && po < K) ourHit++
   upHits.push(pu >= 0 && pu < K)
   ourHits.push(po >= 0 && po < K)
+  if (pu >= 0 && pu < 8) up8++
+  if (po >= 0 && po < 8) our8++
+  const layer = String(c.layer ?? "default")
+  const bucket = (byLayer[layer] ??= { n: 0, ours: 0, up: 0 })
+  bucket.n++
+  if (pu >= 0 && pu < K) bucket.up++
+  if (po >= 0 && po < K) bucket.ours++
   if (pu < 0) upPos += 99
   else upPos += pu + 1
   if (po < 0) ourPos += 99
@@ -292,6 +303,8 @@ if (process.argv.includes("--json")) {
       ourAvg: Number((ourPos / n).toFixed(2)),
       ourHits,
       upHits,
+      byLayer,
+      at8: { ours: our8, up: up8 },
     }),
   )
   process.exit(0)
