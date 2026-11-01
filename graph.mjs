@@ -9,7 +9,7 @@
  *   node graph.mjs --db <path>            # 指定分片
  *   node graph.mjs --tag opencode_project_xxx   # 按项目 tag 选分片（多项目时务必用这个）
  *   node graph.mjs --if-stale             # 只在「未覆盖的记忆 ≥10 条或 ≥20%」时才重算
- *   node graph.mjs --min 0.55 --top 5     # 边权阈值与邻居数
+ *   node graph.mjs --min 0.90 --top 5     # 边权阈值与邻居数
  *   node graph.mjs --report-only          # 不写 neighbors.json，只出报告
  *
  * 产物：
@@ -35,8 +35,16 @@ const opt = (name, fallback) => {
 }
 const flag = (name) => argv.includes(`--${name}`)
 
-const MIN_WEIGHT = Number(opt("min", 0.5))
+// 边权阈值：按当前嵌入模型的相似度分布标定。
+// bge-m3 时代取 0.5；multilingual-e5-small 的余弦整体偏高（49 条实测：min 0.840、
+// p50 0.898、p99 0.943），0.5 等于不设阈值 → 改 0.90（≈p50，只丢最弱的边）。
+// gate 实测：0.88 / 0.90 与 0.5 的两套用例数字完全一致；0.92 会让盲测召回 9→8、
+// 平均名次 10.33→10.87（变差），所以停在 0.90。
+const MIN_WEIGHT = Number(opt("min", 0.9))
 const TOP_K = Number(opt("top", 5))
+// 相对剪枝：只保留「接近该节点最强边」的邻居。绝对阈值在压缩的余弦分布里几乎不起作用
+// （e5 下 49 条两两最低 0.84），相对阈值才能真正删掉弱边。0.97 = 保留不低于本节点最强边 97% 的边。
+const RATIO = Number(opt("ratio", 0.99))
 const REPORT_ONLY = flag("report-only")
 const DB_ARG = opt("db", "")
 // 输出前缀：跑测试库时务必指定，否则会覆盖插件正在用的 neighbors.json
@@ -44,8 +52,10 @@ const OUT_PREFIX = opt("out", "")
 // 项目 tag：opencode_project_<16 hex> → 精确锁定分片，避免多项目时选错库
 const TAG_ARG = opt("tag", "")
 const IF_STALE = flag("if-stale")
-// hub 判定阈值：与 ≥HUB_T 的其它记忆数量，用来识别「对什么都沾边」的泛化记忆
-const HUB_T = Number(opt("hub-t", 0.75))
+// hub 判定阈值：与 ≥HUB_T 的其它记忆数量，用来识别「对什么都沾边」的泛化记忆。
+// e5 下 0.75 会把「所有对」都算成 hub（实测最小相似度 0.840），故取 p90=0.92。
+// hub 抑制默认 alpha=0，本值只影响报告与开启抑制时的判定，不影响当前排序。
+const HUB_T = Number(opt("hub-t", 0.92))
 const STALE_MIN = 10
 const STALE_RATIO = 0.2
 
@@ -196,6 +206,16 @@ function round(n) {
   return Math.round(n * 1000) / 1000
 }
 
+const edgeCountRaw = Object.values(neighbors).reduce((s, l) => s + l.length, 0)
+
+// 相对剪枝：每个节点只保留与「自己最强边」相差不超过 (1-RATIO) 的邻居。
+for (const id of Object.keys(neighbors)) {
+  const list = neighbors[id]
+  if (list.length === 0) continue
+  const max = list[0].w
+  neighbors[id] = list.filter((e) => e.w >= max * RATIO)
+}
+
 const edgeCount = Object.values(neighbors).reduce((s, l) => s + l.length, 0)
 const isolated = Object.entries(neighbors).filter(([, l]) => l.length === 0).length
 
@@ -225,6 +245,7 @@ if (!REPORT_ONLY) {
         db: file,
         minWeight: MIN_WEIGHT,
         topK: TOP_K,
+        ratio: RATIO,
         nodes: withVec.length,
         total: withVec.length,
         hubT: HUB_T,

@@ -166,13 +166,18 @@ Seeds 28 fixture memories into an isolated container tag, builds the graph, runs
 
 The gap narrows as the store grows (more candidates, more competition), but the plugin stays ahead on both counts.
 
-`gate.mjs` turns that into a pass/fail check:
+`gate.mjs` turns that into a pass/fail check. It judges **relative to raw vector order** (absolute rank inevitably drifts as the store grows) and prints a paired significance check:
 
 ```
 gate: 14 用例，topK=3
-  召回：10 / 14   要求 ≥ 9   PASS
-  平均名次：2.43        要求 ≤ 3   PASS
-  参照基线（纯向量）：召回 9/14，平均名次 6.07
+  相对判定（主判据，对比上游纯向量）
+    召回：11 vs 6   PASS
+    平均名次：2.93 vs 18.93   PASS
+  绝对兜底（只保留召回地板，防两边一起烂）
+    召回：11 / 14   要求 ≥ 7   PASS
+  统计（配对差异是否可信）
+    召回 95% CI：52.4%–92.4%（11/14）
+    McNemar：仅我们命中 5，仅上游命中 0，p=0.06（差异不显著）
 
 => 通过
 ```
@@ -185,6 +190,17 @@ node gate.mjs --dir C:\path\to\the\project\whose\memories\you\evaluate
 
 `--dir` matters: the script derives the project's container tag from a directory path, and the default (`cwd`) is wrong when you run it from the plugin folder. It needs a live OpenCode + opencode-mem instance, so it is a local pre-release check rather than a CI job.
 
+### Held-out evaluation
+
+The 14 + 15 cases above are a **development set** — they have been used to choose weights, so they can no longer give an unbiased estimate. `fixtures/heldout-2026-11.json` holds 33 cases written by three independent subagents from a memory dump, never used during tuning.
+
+```powershell
+npm run heldout:check -- --dir <project> fixtures/heldout-2026-11.json   # integrity
+node gate.mjs --no-default --cases fixtures/heldout-2026-11.json --dir <project>  # once, before release
+```
+
+Rules: validate before use, run **once per release**, never tune on it, and record the result plus the file SHA-256. See `NOTES.md` §12.6.
+
 Two findings worth knowing before you tune anything:
 
 - **Generic "common knowledge" memories hurt.** Injecting 20 sensible engineering facts dropped recall@3 `11 → 10` and average rank `2.2 → 9.7`. They look relevant to every query, so they crowd out real answers.
@@ -192,21 +208,30 @@ Two findings worth knowing before you tune anything:
 
 ## Configuration
 
-Constants live at the top of `index.ts`; two are env-overridable:
+Constants live at the top of `index.ts`; ranking weights live in `lib/score.mjs`. Env overrides:
 
 | Env | Default | Meaning |
 |---|---|---|
 | `MEMCTX_API` | `http://127.0.0.1:4747` | opencode-mem web server |
 | `MEMCTX_NEIGHBORS` | `./data/neighbors.json` | neighbor table path |
+| `MEMCTX_EXPAND` | `2` | graph candidate expansion depth (`0` disables, `1`/`2` hops) |
+| `MEMCTX_EXPAND_SEEDS` | `5` | how many API top hits seed the expansion |
+| `MEMCTX_EXPAND_MAX` | `20` | cap on memories pulled in from the shard |
+| `MEMCTX_GRAPHMODE` | `max` | `max` (neighbor max score) or `ppr` (Personalized PageRank) |
+| `MEMCTX_PPR_DAMPING` | `0.85` | PPR damping (only with `GRAPHMODE=ppr`) |
+| `MEMCTX_PPR_SEEDS` | `5` | PPR seed count |
+| `MEMCTX_DEDUP` | `1` | MMR diversification strength; `1` = off, lower = more diverse |
+| `MEMCTX_HUB_ALPHA` | `0` | hub suppression strength (`0` = off; measured negative) |
 
-Tuning knobs: `STABLE_K` (8), `DYNAMIC_K` (3), `W_CONTENT/W_TAGS/W_KEYWORD/W_GRAPH`, `GRAPH_LAMBDA` (0.5), `DECAY_HALF_LIFE_DAYS` (180), `DRIFT_TURNS` (2), `MAX_REANCHORS` (3).
+Tuning knobs inside the code: `STABLE_K` (8), `DYNAMIC_K` (3), `W_CONTENT/W_TAGS/W_KEYWORD/W_GRAPH`, `GRAPH_LAMBDA` (1), `DECAY_HALF_LIFE_DAYS` (180), `DRIFT_TURNS` (2), `MAX_REANCHORS` (3).
 
 ## Limitations
 
 - The stable block is anchored to the session's **first** message; re-anchoring is heuristic and costs one full recompute.
 - `/api/search` is a private contract. Pin the upstream version; a route change breaks recall silently.
 - The per-turn tail is written into the user message, so it is persisted in the transcript (≈100–200 tokens per turn).
-- Graph rerank only sees neighbors inside the current candidate set (1 hop, no PPR).
+- Expanded candidates have no query-vector score; BM25 is a lexical proxy and can miss pure paraphrase.
+- PPR and MMR are implemented but measured **negative** on a ~50-memory store; both default off.
 - `neighbors.json` is built by hand (`node graph.mjs`), not continuously.
 - Windows: shard files are locked while OpenCode runs — stop it before deleting anything.
 

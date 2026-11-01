@@ -158,13 +158,18 @@ npm test
 
 语料越大差距越小（候选变多、竞争变强），但本插件两项都占优。
 
-`gate.mjs` 把它变成通过/失败：
+`gate.mjs` 把它变成通过/失败。判据是**相对上游纯向量**（绝对名次会随语料膨胀漂移），并附带配对显著性：
 
 ```
 gate: 14 用例，topK=3
-  召回：10 / 14   要求 ≥ 9   PASS
-  平均名次：2.43        要求 ≤ 3   PASS
-  参照基线（纯向量）：召回 9/14，平均名次 6.07
+  相对判定（主判据，对比上游纯向量）
+    召回：11 vs 6   PASS
+    平均名次：2.93 vs 18.93   PASS
+  绝对兜底（只保留召回地板，防两边一起烂）
+    召回：11 / 14   要求 ≥ 7   PASS
+  统计（配对差异是否可信）
+    召回 95% CI：52.4%–92.4%（11/14）
+    McNemar：仅我们命中 5，仅上游命中 0，p=0.06（差异不显著）
 
 => 通过
 ```
@@ -177,28 +182,48 @@ node gate.mjs --dir C:\path\to\the\project\whose\memories\you\evaluate
 
 `--dir` 不能省：脚本按目录推算项目的 container tag，从插件目录里跑（`cwd` 变了）会算错、检索不到任何候选。它需要活着的 OpenCode + opencode-mem，所以是本地发布前检查，不适合当 CI。
 
+### 独立评估集（held-out）
+
+上面的 14 + 15 例是**开发集**，已被用于挑权重，不再无偏。`fixtures/heldout-2026-11.json` 是 33 条由三个独立子代理按记忆导出材料出的题，调参期间从未使用。
+
+```powershell
+npm run heldout:check -- --dir <项目> fixtures/heldout-2026-11.json          # 完整性校验
+node gate.mjs --no-default --cases fixtures/heldout-2026-11.json --dir <项目>  # 发布前跑一次
+```
+
+规则：用前先校验，**每次发布只跑一次**，不许拿它调参，结果与文件 SHA-256 一起记录（见 `NOTES.md` §12.6）。
+
 ### 调参前该知道的两件事
 
 - **通用常识会拖后腿。** 注入 20 条靠谱的工程常识后，召回@3 从 `11/14` 掉到 `10/14`，平均名次从 `2.2` 崩到 `9.7`。它们对任何查询都「有点相关」，会均匀挤掉真正的答案。
-- **图分必须阻尼。** `max(边权 × 邻居分)` 会让相邻节点互相抬轿子；λ = 0.5 能保住收益，又不会把真正的目标顶下去。
+- **图分必须阻尼。** `max(边权 × 邻居分)` 会让相邻节点互相抬轿子；λ = 1.0 在 51 条语料上实测最好（0.5 时盲测掉到 7/15）。
 
 ## 配置
 
-常量在 `index.ts` 顶部，其中两个支持环境变量：
+常量在 `index.ts` 顶部，排序权重在 `lib/score.mjs`。支持的环境变量：
 
 | 环境变量 | 默认值 | 含义 |
 |---|---|---|
 | `MEMCTX_API` | `http://127.0.0.1:4747` | opencode-mem web server 地址 |
 | `MEMCTX_NEIGHBORS` | `./data/neighbors.json` | 邻接表路径 |
+| `MEMCTX_EXPAND` | `2` | 图候选扩展跳数（`0` 关闭） |
+| `MEMCTX_EXPAND_SEEDS` | `5` | 用 API 前几名做扩展种子 |
+| `MEMCTX_EXPAND_MAX` | `20` | 最多补入多少条候选外记忆 |
+| `MEMCTX_GRAPHMODE` | `max` | `max` 或 `ppr` |
+| `MEMCTX_PPR_DAMPING` | `0.85` | PPR 阻尼（仅 ppr 模式） |
+| `MEMCTX_PPR_SEEDS` | `5` | PPR 种子数 |
+| `MEMCTX_DEDUP` | `1` | MMR 多样性强度；`1` = 关闭 |
+| `MEMCTX_HUB_ALPHA` | `0` | hub 抑制强度；`0` = 关闭（实测负收益） |
 
-可调项：`STABLE_K`(8)、`DYNAMIC_K`(3)、权重 `W_CONTENT/W_TAGS/W_KEYWORD/W_GRAPH`、`GRAPH_LAMBDA`(0.5)、`DECAY_HALF_LIFE_DAYS`(180)、`DRIFT_TURNS`(2)、`MAX_REANCHORS`(3)。
+可调项：`STABLE_K`(8)、`DYNAMIC_K`(3)、权重 `W_CONTENT/W_TAGS/W_KEYWORD/W_GRAPH`、`GRAPH_LAMBDA`(1)、`DECAY_HALF_LIFE_DAYS`(180)、`DRIFT_TURNS`(2)、`MAX_REANCHORS`(3)。
 
 ## 已知限制
 
 - 稳定块锚在会话**第一句**上；重锚是启发式的，且会让缓存失效一次（全量重算）。
 - `/api/search` 是私有契约。请锁上游版本，路由一变召回会静默失效。
 - 每轮的小尾巴写进了用户消息，会留在对话记录里（每轮约 100–200 token）。
-- 图重排只在当前候选集内生效（1 跳，没有 PPR）。
+- 扩展进来的候选没有查询向量分，只能靠 BM25 补，纯改写场景会偏弱。
+- PPR 与 MMR 已实现，但在 ~50 条语料上实测负收益，默认关闭。
 - `neighbors.json` 是手动跑 `graph.mjs` 生成的，不是持续更新。
 - Windows 上 OpenCode 运行时会锁住分片文件，删除前必须先退出。
 

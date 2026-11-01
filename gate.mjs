@@ -42,6 +42,11 @@ if (CASES) args.push("--cases", CASES)
 if (DIR) args.push("--dir", DIR)
 // 只跑指定用例集（不叠加内置 14 例），用于盲测回归
 if (process.argv.includes("--no-default")) args.push("--no-default")
+// 候选扩展开关透传给 eval（0=关闭；1/2=图扩展跳数）
+for (const name of ["--expand", "--eseeds", "--emax", "--gmode", "--pd", "--ps", "--gl", "--dedup"]) {
+  const i = process.argv.indexOf(name)
+  if (i >= 0 && process.argv[i + 1]) args.push(name, process.argv[i + 1])
+}
 
 let raw
 try {
@@ -60,7 +65,32 @@ try {
   process.exit(2)
 }
 
-const { cases, ourHit, ourAvg, upHit, upAvg } = result
+const { cases, ourHit, ourAvg, upHit, upAvg, ourHits = [], upHits = [] } = result
+
+// Wilson 95% 置信区间：33 条用例时一条就是 3 个百分点，必须给区间
+function wilson(x, n, z = 1.96) {
+  if (!n) return [0, 0]
+  const p = x / n
+  const denom = 1 + (z * z) / n
+  const centre = (p + (z * z) / (2 * n)) / denom
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom
+  return [Math.max(0, centre - half), Math.min(1, centre + half)]
+}
+
+// McNemar 精确检验（双侧）：只比较两边结论不一致的配对
+function binomTwoSided(b, c) {
+  const n = b + c
+  if (n === 0) return 1
+  const choose = (n, k) => {
+    let r = 1
+    for (let i = 1; i <= k; i++) r = (r * (n - k + i)) / i
+    return r
+  }
+  let tail = 0
+  for (let k = Math.max(b, c); k <= n; k++) tail += choose(n, k) * Math.pow(0.5, n)
+  return Math.min(1, 2 * tail)
+}
+
 // 召回地板也随用例数走（默认 50%），因为"召回@3 的绝对值"同样会随语料增长而下降
 const MIN_HIT = MIN_HIT_ARG ? Number(MIN_HIT_ARG) : Math.ceil(cases * 0.5)
 
@@ -88,6 +118,25 @@ console.log(`    平均名次：${ourAvg} vs ${upAvg}   ${mark(relAvg)}`)
 console.log("  绝对兜底（只保留召回地板，防两边一起烂）")
 console.log(`    召回：${ourHit} / ${cases}   要求 ≥ ${MIN_HIT}   ${mark(okHit)}`)
 console.log(`    平均名次：${ourAvg}  （参考值 ≤ ${MAX_AVG}，不参与判定）   ${okAvg ? "在范围内" : "已超出，仅提示"}`)
+
+if (ourHits.length === cases && upHits.length === cases) {
+  const [lo, hi] = wilson(ourHit, cases)
+  let onlyOurs = 0
+  let onlyUp = 0
+  for (let i = 0; i < cases; i++) {
+    if (ourHits[i] && !upHits[i]) onlyOurs++
+    else if (!ourHits[i] && upHits[i]) onlyUp++
+  }
+  const p = binomTwoSided(onlyOurs, onlyUp)
+  console.log("  统计（配对差异是否可信）")
+  console.log(
+    `    召回 95% CI：${(lo * 100).toFixed(1)}%–${(hi * 100).toFixed(1)}%（${ourHit}/${cases}）`,
+  )
+  console.log(
+    `    McNemar：仅我们命中 ${onlyOurs}，仅上游命中 ${onlyUp}，p=${p.toFixed(2)}` +
+      (p >= 0.05 ? "（差异不显著）" : "（差异显著）"),
+  )
+}
 if (relHit && relAvg && !relBetter && !(okHit && okAvg)) {
   console.log("  提示：相对指标持平，但绝对兜底不达标——检查语料是否过脏或检索是否退化。")
 }

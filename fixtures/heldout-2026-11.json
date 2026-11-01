@@ -1,0 +1,233 @@
+[
+  {
+    "q": "现在记录是靠什么方式进去的？后台那种每轮自动写还需要吗？",
+    "expect": "autoCaptureEnabled=false",
+    "layer": "fact",
+    "note": "只有这条记忆写明了自动捕获开关的最终设定值。",
+    "targetId": "mem_1793478714868_u4grojq6c"
+  },
+  {
+    "q": "查看会话 token 消耗的那个脚本，提醒分几档、起点在多少？",
+    "expect": "BASE=250000、STEP=150000",
+    "layer": "fact",
+    "note": "只有这条给出了 ctx.mjs 的两个档位常数及含义，别处没有提过这两个数值。",
+    "targetId": "mem_1793480605239_zem5j6pap"
+  },
+  {
+    "q": "顺着邻接关系往外扩的时候，单个节点连边数、走几层、边要满足什么条件、整体规模各是多少？",
+    "expect": "出度≤3、2跳、边权连乘≥0.4",
+    "layer": "fact",
+    "note": "只有这条完整定义了四个扩展参数，其他记忆只讨论阈值或跳数的单点改动。",
+    "targetId": "mem_1793487415443_lyqdiwdoj"
+  },
+  {
+    "q": "第一版验证时，若每轮塞进去的内容一字不差，能吃到多少命中？注意按四舍五入到小数点后一位。",
+    "expect": "缓存命中 97.3%（cacheR=5888/input=165）",
+    "layer": "fact",
+    "note": "97.3% 与对应的 cacheR/input 数值仅在 C+ spike 验证这条里出现。",
+    "targetId": "mem_1793489461335_4evfjk4fe"
+  },
+  {
+    "q": "动态排序时内容、标签、关键词三项的占比怎么分的？",
+    "expect": "0.5 内容+0.2 标签+0.15 关键词",
+    "layer": "fact",
+    "note": "这条是唯一完整给出三项信号权重组合的记忆。",
+    "targetId": "mem_1793490131871_vj3yti93f"
+  },
+  {
+    "q": "想自己触发一次会话压缩，请求要怎么构造才能不报错？",
+    "expect": "必须给 JSON body（否则 400 Expected object）",
+    "layer": "fact",
+    "note": "API 与请求体的报错细节只在这条压缩兜底记忆里写了；另一条 HTTP 参考记忆的措辞是「带…否则返回400」，与该片段不同。",
+    "targetId": "mem_1793490951575_arqxqdub0"
+  },
+  {
+    "q": "五十条合成语料建图时，边权下限选多少既不 blow up 边数也不留太多孤立点？",
+    "expect": "0.62→49 边 9 孤立",
+    "layer": "fact",
+    "note": "三档阈值的边数与孤立点数据只出现在 P1 规模验收这条记忆里。",
+    "targetId": "mem_1793491298748_b9kosjce4"
+  },
+  {
+    "q": "想给每条记录附带 kind、来源之类自己的字段，应该落在数据库哪一列？",
+    "expect": "metadata 是唯一的 JSON 扩展位",
+    "layer": "fact",
+    "note": "以表结构来源（schema-migrations）为据说明 metadata 承载自定义字段的表述只有这条有。",
+    "targetId": "mem_1793492652935_mlwezhvlz"
+  },
+  {
+    "q": "线上主干分支目前停在哪个提交号？",
+    "expect": "main=1314317",
+    "layer": "fact",
+    "note": "「main=1314317」这一写法只在此现状记忆中出现，发布记忆里写作「提交 1314317」。",
+    "targetId": "mem_1793495465200_5r10c63o5"
+  },
+  {
+    "q": "体积最小的那个中文向量模型，维度和资源占用具体数字是多少？",
+    "expect": "512 维/23MB/RSS 127MB/2ms",
+    "layer": "fact",
+    "note": "bge-small-zh 的四项性能数字仅在小模型对照这条里完整列出。",
+    "targetId": "mem_1793498132988_aj7xexyv2"
+  },
+  {
+    "q": "要让上游插件完全不再往上下文里注入内容，光调召回策略不够，还得改哪个开关？",
+    "expect": "只能设 chatMessage.enabled=false",
+    "layer": "why",
+    "note": "考关闭注入的唯一开关，recall 三档里没有关闭项",
+    "targetId": "mem_1793492653000_1tbszuny4"
+  },
+  {
+    "q": "为什么不直接把上游代码改了、自己维护一个分支？",
+    "expect": "B（fork）只在必须改存储层时启用",
+    "layer": "why",
+    "note": "考 C+ 路线为何选旁挂而非 fork",
+    "targetId": "mem_1793495464927_36ogj0uwn"
+  },
+  {
+    "q": "判断话题是否跑偏时，为何不比较新旧说法的字面重合度？",
+    "expect": "中文换说法 2-gram 重叠会归零",
+    "layer": "why",
+    "note": "考重锚判定改用 rank 第一名的原因",
+    "targetId": "mem_1793491138957_y834esqgk"
+  },
+  {
+    "q": "往库里批量塞通用工程常识，为什么会拉低检索效果？",
+    "expect": "项目事实是答案，通用常识是竞争噪声",
+    "layer": "why",
+    "note": "考记忆卫生实验的结论依据",
+    "targetId": "mem_1793492398994_svxutii0c"
+  },
+  {
+    "q": "做重复检测时，只截取开头一小段去比对会出什么问题？",
+    "expect": "前缀检索会把重复度从 0.79 压到 0.72",
+    "layer": "why",
+    "note": "考 memctx_add 去重为何用全文检索",
+    "targetId": "mem_1793494906329_50wzqmywv"
+  },
+  {
+    "q": "「两种排序方式结果一模一样」这个早先的判断，后来被解释成什么？",
+    "expect": "是假象，根因两个静默 bug",
+    "layer": "supersede",
+    "note": "考旧评估结论作废重跑的原因定性",
+    "targetId": "mem_1793492012957_1rn84tace"
+  },
+  {
+    "q": "发布前的自动化检查，判定标准最后换成了什么口径？",
+    "expect": "绝对兜底放宽到召回≥9、平均名次≤15",
+    "layer": "supersede",
+    "note": "考闸门由绝对指标改为相对指标后的兜底线",
+    "targetId": "mem_1793500586267_nptkahagn"
+  },
+  {
+    "q": "邻接传播里的衰减系数，线上最后采用的是哪个取值？",
+    "expect": "线上改回 λ=1 并让 eval 默认一致",
+    "layer": "supersede",
+    "note": "考图分 λ 复测后的最终取值",
+    "targetId": "mem_1793505372066_qfkep9tw0"
+  },
+  {
+    "q": "评测脚本会不会把用户的原始提问也算进候选，这件事后来是怎么定性的？",
+    "expect": "eval.mjs 早已过滤 type=prompt",
+    "layer": "supersede",
+    "note": "考对「未过滤 prompt」旧说法的更正",
+    "targetId": "mem_1793500297231_vslvzj4w9"
+  },
+  {
+    "q": "给记忆之间的连线设权重门槛时，最后选了哪个数？",
+    "expect": "≥0.68 有 24 对（采用）",
+    "layer": "supersede",
+    "note": "考邻接表边权阈值的最终采用值",
+    "targetId": "mem_1793490839823_o9xkwgfqt"
+  },
+  {
+    "q": "这台电脑访问互联网时，中间那个转发服务开在哪个地址和端口？",
+    "expect": "本地代理 127.0.0.1:7897",
+    "layer": "paraphrase",
+    "note": "把「代理」说成「转发服务」，只问地址端口，目标指向环境备注那条",
+    "targetId": "mem_1793476806866_bqiwgrmqu"
+  },
+  {
+    "q": "这台机器上跑的那套语义编码是几维的，数值又用什么精度压过？",
+    "expect": "1024 维，q8 量化",
+    "layer": "paraphrase",
+    "note": "绕开模型名，只问维度与量化精度",
+    "targetId": "mem_1793477516360_g9gdu5q8j"
+  },
+  {
+    "q": "几个扩展挂在同一个回调上时，谁先跑？后跑的那个能看到前面改过的东西吗？",
+    "expect": "多个插件注册同一个 hook 时按插件加载顺序执行",
+    "layer": "paraphrase",
+    "note": "用「扩展」「回调」替代插件与 hook，问执行次序和可见性",
+    "targetId": "mem_1793492652822_f0iva4meh"
+  },
+  {
+    "q": "为什么说代码改动别零敲碎打地存，最好一次改完再落盘？",
+    "expect": "插件内存态（每会话的稳定块缓存）被清空",
+    "layer": "paraphrase",
+    "note": "不提 watcher/热重载/文件名，只问攒着保存的代价",
+    "targetId": "mem_1793492653141_a24hm5k4h"
+  },
+  {
+    "q": "语料涨到四十几条之后那次复测，我们和上游的平均名次各是多少？",
+    "expect": "平均名次 16.29 vs 19.07",
+    "layer": "multi-hop",
+    "note": "需要先知道「语料膨胀导致旧指标恶化」这条背景，答案仍落在版本复测那条",
+    "targetId": "mem_1793501980857_2u0e3hfv5"
+  },
+  {
+    "q": "For an international audience, which compact multilingual model should be the default, and what must you remember to add to the text?",
+    "expect": "面向国际用户时默认选 e5-small",
+    "layer": "english",
+    "note": "英文问多语言选型，正文给出默认选择与前后缀要求",
+    "targetId": "mem_1793498909318_72t1dqh9o"
+  },
+  {
+    "q": "装好的包在别人机器上跑测试直接失败，后来往打包清单里补了什么才修好？",
+    "expect": "tarball 从 18 个文件变 23 个",
+    "layer": "paraphrase",
+    "note": "问打包遗漏导致安装后测试失败，答案指向文件数从 18 增到 23 的事实；不出现 npm/files 等原词",
+    "targetId": "mem_1793496413765_zb6jtv7ra"
+  },
+  {
+    "q": "数据库里记录数突然翻倍、早先标记删除的内容又冒了出来，是上游哪个动作造成的？",
+    "expect": "613 条软删行全部复活",
+    "layer": "paraphrase",
+    "note": "描述软删行复活的后果，避免出现迁移/re-embed/migration 等显著词",
+    "targetId": "mem_1793503827705_bcm06qh5b"
+  },
+  {
+    "q": "有些记忆和其他条目之间缺少关联，导致某一路打分恒为零，后来靠什么补上的？",
+    "expect": "20 条无结构边、图分恒为 0",
+    "layer": "paraphrase",
+    "note": "以「缺少关联」「某一路打分」替换结构边与图分，expect 取带具体条数与零值判断的独有句",
+    "targetId": "mem_1793501750997_v4h6qco90"
+  },
+  {
+    "q": "聊天过程中记忆条数自己往上涨，这种情况需要去排查是不是出故障了吗？",
+    "expect": "新条目多为英文第三人称的会话摘要",
+    "layer": "paraphrase",
+    "note": "问记忆计数自增是否为异常，答案落在条目形态与来源判断上；不出现并行会话/自动捕获原词",
+    "targetId": "mem_1793479380454_wud32p5wp"
+  },
+  {
+    "q": "In the offline comparison over the 28-memory corpus, which setup posted the best average rank, and how did it score on the top-3 metric?",
+    "expect": "向量+BM25 混合 19/22、21/22、1.36",
+    "layer": "english",
+    "note": "英文提问，问最佳平均名次方案；expect 为该行唯一的三段指标串",
+    "targetId": "mem_1793497437221_y3lbt77bp"
+  },
+  {
+    "q": "What does the abbreviation used for that other agent harness stand for, and what does the target side lack?",
+    "expect": "目标平台有注入钩子但没有记忆后端",
+    "layer": "english",
+    "note": "英文提问，避免直接写 dsh 缩写；答案为其缺失能力的概括句",
+    "targetId": "mem_1793496926808_80sqube3i"
+  },
+  {
+    "q": "既然单次重启的代价不低，为什么改插件代码时还要尽量把修改攒起来一次保存？",
+    "expect": "重启一次约 40 万 token 全量重算",
+    "layer": "multi-hop",
+    "note": "需同时用到热重载清空会话缓存与重启成本两条；expect 取带 40 万 token 的成本数值句",
+    "targetId": "mem_1793487489397_2iz1hjf30"
+  }
+]

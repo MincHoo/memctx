@@ -5,6 +5,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ---
 
+## [0.2.0] — 2026-11-01
+
+Embedding switch, graph candidate expansion, and an independent held-out set.
+This release also fixes a parameter drift between the gate and the live plugin.
+
+### Added
+
+- **Candidate expansion** (`MEMCTX_EXPAND`, default `2`): after `/api/search` returns 30 candidates, the plugin walks the neighbor table 1–2 hops from the top-5 and pulls the missing memories from the local shard (read-only). They are scored with **local BM25**, because query vectors cannot be reconstructed from stored passage vectors.
+- **Relative edge pruning** in `graph.mjs`: `--ratio` (default `0.99`) keeps only neighbors close to each node's strongest edge. e5 cosine is compressed (min 0.84 on a 50-memory store), so absolute thresholds alone no longer discriminate.
+- **PPR graph mode** (`MEMCTX_GRAPHMODE=ppr`, default `max`): Personalized PageRank with damping 0.85, kept for re-testing on sparser graphs. Measured **negative** on the current near-complete graph (blind recall 9 → 1), so it ships off.
+- **MMR diversification** (`MEMCTX_DEDUP`, default `1` = off): content 2-gram Jaccard MMR. Measured negative on both dev sets, kept behind a flag.
+- **`heldout-check.mjs`** (`npm run heldout:check`): validates an evaluation set — exact-once substring match against active memories, no soft-deleted / superseded targets, no duplicate targets or questions, layer histogram — and can merge parts with auto-filled `targetId`.
+- **`fixtures/heldout-2026-11.json`**: 33-case held-out set (fact / why / supersede / paraphrase / multi-hop / english), authored by three independent subagents from a memory dump. Single-use, reserved for release; SHA-256 recorded in `NOTES.md` §12.6.
+- **Migration guard** in `switch-embedding.mjs`: counts active/soft-deleted rows per shard before and after `/api/migration/run`, aborts with exit code 2 when soft-deleted rows come back, and `--restore-deleted` restores them from the `*.pre-reembed-*.bak` snapshot. `--verify-only` prints shard counts.
+
+### Changed
+
+- **Ranking is now one implementation** (`lib/score.mjs`), shared by `index.ts` and `eval.mjs`. Previously each had its own copy; the gate quietly measured λ = 1 while the plugin ran λ = 0.5.
+- **`GRAPH_LAMBDA` default raised 0.5 → 1.0.** Re-measured at 51 memories: λ = 0.5 scored 7/15 on the blind set (below the floor), 0.75 and 1.0 scored 9/15; 1.0 also had the best average rank.
+- **`graph.mjs` defaults** now `--min 0.90 --hub-t 0.92 --ratio 0.99`, calibrated to the e5 similarity distribution.
+- Graph scoring moved out of `index.ts` `rank()` into `lib/score.mjs`; `retrieve()` is now the single search entry point for stable block, tail, re-anchor and compaction.
+- `package.json` `files` now ships `lib/` and `heldout-check.mjs`.
+
+### Fixed
+
+- **Upstream `deleted_at` loss during re-embed**: opencode-mem 2.39.0 rebuilds shards without selecting `deleted_at`, silently resurrecting every soft-deleted memory (613 rows across 3 shards in our run). The plugin can't prevent it, but the migration helper now detects, reports and can restore it.
+- **Gate/plugin parameter drift**: gate numbers were measured with eval's own defaults; they now come from the same defaults as the live plugin.
+
+### Measured (51–52 memories, multilingual-e5-small)
+
+| Config | Dev 14 | Blind 15 |
+|---|---|---|
+| no expansion | 9; 11.64 | 9; 10.33 |
+| 1-hop + BM25 | 10; 9.71 | 8; 10.93 |
+| **2-hop + BM25 (default)** | **11; 2.93** | **9; 4.53** |
+
+- PPR and MMR remain off; see `NOTES.md` §12 for the full A/B tables.
+- Held-out set is **not executed in this release** — it is reserved for the next published build.
+
+### Known limitations
+
+- Expansion adds memories that have no query-vector score; BM25 is a lexical proxy and can be weak on pure paraphrase.
+- The graph is near-complete on a ~50-memory e5 store; multi-hop gains are bounded until the store grows and edges become discriminative.
+- `switch-embedding.mjs` restores soft-deleted rows through the API, not by rewriting the shard.
+
+---
+
 ## [0.1.0] — 2026-11-01
 
 First public release. Companion plugin for [`opencode-mem`](https://github.com/tickernelz/opencode-mem):

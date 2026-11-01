@@ -1,6 +1,6 @@
 {
   "name": "opencode-memctx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Better context injection for opencode-mem: stable block + per-turn tail, graph rerank, cache-friendly by design",
   "type": "module",
   "license": "MIT",
@@ -26,17 +26,19 @@
     "check": "node check.mjs",
     "seed": "node seed.mjs",
     "test": "node test.mjs",
-    "doctor": "node doctor.mjs"
+    "doctor": "node doctor.mjs",
+    "heldout:check": "node heldout-check.mjs"
   },
   "files": [
     "index.ts",
-    "lib/store.mjs",
+    "lib/",
     "doctor.mjs",
     "eval.mjs",
     "test.mjs",
     "fixtures/",
     "gate.mjs",
     "graph.mjs",
+    "heldout-check.mjs",
     "probe.mjs",
     "tokens.mjs",
     "check.mjs",

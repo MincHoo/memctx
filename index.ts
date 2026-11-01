@@ -1,4 +1,4 @@
-﻿/**
+/**
  * spike-memctx v2 — C+ 路线：稳定块 + 尾部动态小节 + 打分 + 时间衰减
  *
  * 与 v1（纯 top-5 原样注入）的区别：
@@ -28,6 +28,8 @@ import {
   normalizeLinks,
   upsertRecord,
 } from "./lib/store.mjs"
+import { buildBm25, normalizeScores } from "./lib/rank.mjs"
+import { grams, overlap, rankItems } from "./lib/score.mjs"
 
 // ---------------------------------------------------------------- 配置
 
@@ -40,6 +42,12 @@ const MARK_DYNAMIC = "[memctx:now]"
 const MARK_COMPACT = "[memctx:compaction]"
 
 const CANDIDATES = 30 // 向 API 要多少候选
+// 候选扩展（图召回）：/api/search 只返回 CANDIDATES 条，掉出候选的记忆靠重排永远捞不到。
+// 实测 29 个用例里 3 条目标不在候选内，但从 API top-5 出发 1–2 跳可达。
+// 0=关闭（默认，行为与扩展前完全一致）；1/2=按邻接表扩几跳。
+const EXPAND_DEPTH = Math.min(2, Math.max(0, Number(process.env.MEMCTX_EXPAND ?? "2") || 0))
+const EXPAND_SEEDS = Math.max(1, Number(process.env.MEMCTX_EXPAND_SEEDS ?? "5") || 5)
+const EXPAND_MAX = Math.max(1, Number(process.env.MEMCTX_EXPAND_MAX ?? "20") || 20)
 const STABLE_K = 8 // 稳定块最多几条
 const DYNAMIC_K = 3 // 动态小节最多几条
 const ITEM_CHARS = 180 // 每条截断
@@ -57,9 +65,17 @@ const W_TAGS = 0.2
 const W_KEYWORD = 0.15
 const W_GRAPH = 0.15
 // 图分阻尼：邻居互抬会把 hub 顶到目标之上（实测 v2 被自己的邻居挤出前三）。
-// 0.5 时召回@3 与 1.0 相同，但对「互相抬轿子」更保守。
-const GRAPH_LAMBDA = 0.5
+// 2026-11-01 复测（51 条 e5，两套用例）：λ=0.5 盲测 7/15、λ=0.75 9/15、λ=1.0 9/15，
+// 平均名次也是 1.0 最好 → 改回 1.0，与 eval 默认一致。
+const GRAPH_LAMBDA = 1
 const W_SUM = W_CONTENT + W_TAGS + W_KEYWORD + W_GRAPH
+
+// 图分模式：max = 「邻居最高分」取法（默认，实测最稳）；
+// ppr = Personalized PageRank（HippoRAG 路线）。2026-11-01 实测 PPR 在本项目的
+// 近完全图上严重负收益（盲测召回 9→1），仅保留实现用于换语料/换图后复测，默认关闭。
+const GRAPH_MODE = process.env.MEMCTX_GRAPHMODE ?? "max"
+const PPR_DAMPING = Number(process.env.MEMCTX_PPR_DAMPING ?? "0.85")
+const PPR_SEEDS = Math.max(1, Number(process.env.MEMCTX_PPR_SEEDS ?? "5") || 5)
 
 // hub 抑制：对「跟谁都像」的泛化记忆加乘性惩罚。
 // 实测（47 条语料，两套用例）：alpha=0.15/0.3/0.5 都让召回或平均名次变差（默认 9→8，盲测 11→11/10/9），
@@ -185,39 +201,8 @@ function shortHash(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 12)
 }
 
-// ---------------------------------------------------------------- 文本工具
-
-const NOISE = /[\s\-_.,;:!?()[\]{}"'`~@#$%^&*+=|\\/<>，。；：！？（）【】「」『』、·…—]/g
-
-/** 中文友好：去掉标点空白后按 2-gram 切；同时保留较长的英文/数字词。 */
-function grams(text: string): Set<string> {
-  const clean = String(text ?? "")
-    .toLowerCase()
-    .replace(NOISE, " ")
-  const out = new Set<string>()
-
-  for (const word of clean.split(/\s+/)) {
-    if (!word) continue
-    if (/[\u4e00-\u9fff]/.test(word)) {
-      const chars = [...word].filter((c) => /[\u4e00-\u9fff]/.test(c))
-      for (let i = 0; i < chars.length - 1; i++) out.add(chars[i] + chars[i + 1])
-      if (chars.length === 1) out.add(chars[0])
-    } else if (word.length >= 2) {
-      out.add(word)
-    }
-  }
-  return out
-}
-
-function overlap(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0
-  let hit = 0
-  for (const g of a) if (b.has(g)) hit++
-  return hit / a.size
-}
-
 // ---------------------------------------------------------------- 打分
-
+// 唯一实现：lib/score.mjs（index.ts 与 eval.mjs 共用，避免权重/参数悄悄分叉）
 type Scored = {
   item: AnyRecord
   content: number
@@ -230,78 +215,24 @@ type Scored = {
   score: number
 }
 
-/**
- * 时间戳归一化。注意：API 返回的 createdAt 是 ISO 字符串，不是毫秒数。
- * 直接 Number() 会得到 NaN，`|| 0` 再把它变成 0，于是衰减恒为 1——静默失效。
- */
-function toMs(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value
-  if (typeof value === "string") {
-    const t = Date.parse(value)
-    return Number.isFinite(t) ? t : 0
-  }
-  return 0
-}
+/** 内容去重的 MMR 强度：1=关闭（默认），<1 时强调多样性。 */
+const DEDUP_LAMBDA = Number(process.env.MEMCTX_DEDUP ?? "1")
 
-function daysSince(value: unknown): number {
-  const ms = toMs(value)
-  if (!ms) return 0
-  return Math.max(0, (Date.now() - ms) / 86_400_000)
-}
-
-function scoreItem(item: AnyRecord, queryGrams: Set<string>): Scored {
-  const content = typeof item?.similarity === "number" ? item.similarity : 0
-
-  const tagList: string[] = Array.isArray(item?.tags)
-    ? item.tags
-    : typeof item?.tags === "string" && item.tags
-      ? item.tags.split(",")
-      : []
-  const tagGrams = grams(tagList.join(" "))
-  // 标签相似度：查询覆盖了多少标签 2-gram
-  const tags = tagGrams.size > 0 ? overlap(tagGrams, queryGrams) : 0
-
-  const keyword = overlap(queryGrams, grams(item?.content ?? ""))
-
-  const pinned = item?.isPinned === true || item?.isPinned === 1
-  const decay = pinned ? 1 : Math.pow(0.5, daysSince(item?.createdAt) / DECAY_HALF_LIFE_DAYS)
-
-  // 先只算「非图」部分，图分在 rank() 里用候选集内的邻居分补上
-  const hasTags = tagGrams.size > 0
-  const wSum = W_CONTENT + (hasTags ? W_TAGS : 0) + W_KEYWORD
-  const base = (W_CONTENT * content + (hasTags ? W_TAGS * tags : 0) + W_KEYWORD * keyword) / wSum
-
-  return { item, content, tags, keyword, graph: 0, hasTags, hasGraph: false, decay, score: base * decay * hubOf(String(item?.id ?? "")) }
-}
-
-/** 两遍：第一遍算基础分，第二遍用候选集内的邻居分补 graph_score。 */
 function rank(items: AnyRecord[], query: string, neighbors: NeighborMap | null): Scored[] {
-  const qg = grams(query)
-  const scored = items.map((it) => scoreItem(it, qg))
-  if (!neighbors) return scored.sort((a, b) => b.score - a.score)
-
-  const byId = new Map(scored.map((s) => [String(s.item?.id ?? ""), s]))
-  for (const s of scored) {
-    const edges = neighbors[String(s.item?.id ?? "")]
-    if (!edges || edges.length === 0) continue
-    let g = 0
-    for (const e of edges) {
-      const other = byId.get(e.id)
-      if (other) g = Math.max(g, e.w * other.score)
-    }
-    g *= GRAPH_LAMBDA
-    if (g <= 0) continue
-
-    const wSum = W_CONTENT + (s.hasTags ? W_TAGS : 0) + W_KEYWORD + W_GRAPH
-    const base =
-      (W_CONTENT * s.content + (s.hasTags ? W_TAGS * s.tags : 0) + W_KEYWORD * s.keyword + W_GRAPH * g) / wSum
-    s.graph = g
-    s.hasGraph = true
-    s.score = base * s.decay * hubOf(String(s.item?.id ?? ""))
-  }
-  return scored.sort((a, b) => b.score - a.score)
+  return rankItems(items, query, neighbors, {
+    wContent: W_CONTENT,
+    wTags: W_TAGS,
+    wKeyword: W_KEYWORD,
+    wGraph: W_GRAPH,
+    graphLambda: GRAPH_LAMBDA,
+    decayHalfLifeDays: DECAY_HALF_LIFE_DAYS,
+    graphMode: GRAPH_MODE,
+    pprDamping: PPR_DAMPING,
+    pprSeeds: PPR_SEEDS,
+    diversifyLambda: DEDUP_LAMBDA,
+    hubFn: hubOf,
+  }) as Scored[]
 }
-
 // ---------------------------------------------------------------- 检索
 
 /**
@@ -344,6 +275,131 @@ async function search(query: string, pageSize = CANDIDATES, tag?: string | null)
     .filter((i: AnyRecord) => !NOISE_TYPES.has(String(i?.type ?? "memory")))
     // 被取代（有 validUntil）的记忆默认不再注入，但仍在库里可查
     .filter((i: AnyRecord) => !records[String(i?.id ?? "")]?.validUntil)
+}
+
+/**
+ * 按 id 从项目分片库只读取内容，用于把「候选外」的邻居补进候选集。
+ * 只读打开（readOnly），不写上游库；失败时静默退回原候选，不影响注入。
+ */
+let sqliteMod: AnyRecord | null = null
+
+async function loadShardItems(tag: string, ids: string[]): Promise<AnyRecord[]> {
+  if (ids.length === 0) return []
+  try {
+    if (!sqliteMod) sqliteMod = (await import("node:sqlite")) as AnyRecord
+    const hash = tag.replace(/^opencode_project_/, "")
+    const file = join(homedir(), ".opencode-mem", "data", "projects", `project_${hash}_shard_0.db`)
+    if (!existsSync(file)) return []
+    const db = new (sqliteMod.DatabaseSync as AnyRecord)(file, { readOnly: true })
+    try {
+      const placeholders = ids.map(() => "?").join(",")
+      const rows = db
+        .prepare(
+          `SELECT id, content, tags, type, created_at, is_pinned FROM memories ` +
+            `WHERE deleted_at IS NULL AND id IN (${placeholders})`,
+        )
+        .all(...ids) as AnyRecord[]
+      return rows.map((r) => ({
+        id: String(r.id),
+        content: String(r.content ?? ""),
+        tags: r.tags ? String(r.tags) : undefined,
+        type: r.type ? String(r.type) : undefined,
+        createdAt: Number(r.created_at ?? 0),
+        isPinned: Number(r.is_pinned ?? 0) === 1,
+        // 没有查询向量 → 内容分留空（0），扩展项只靠标签/关键词/图分排序
+      }))
+    } finally {
+      db.close()
+    }
+  } catch (error) {
+    log(`expand db error: ${String(error)}`)
+    return []
+  }
+}
+
+/**
+ * 检索 + 可选的图候选扩展。
+ * 关闭时（默认 MEMCTX_EXPAND=0）与原来完全一致：只重排 /api/search 的 30 条。
+ * 开启后从 API top-N 出发按邻接表扩 1–2 跳，把候选外的记忆补进来再参与打分。
+ */
+/**
+ * 本地词法索引（BM25）用的语料：只读分片库里的活跃记忆，缓存 60 秒。
+ * 用途：候选扩展进来的记忆拿不到 query 向量，用 BM25 补内容分，否则只能靠标签/关键词。
+ */
+let corpusCache: { tag: string; at: number; bm25: AnyRecord } | null = null
+
+async function loadCorpus(tag: string): Promise<AnyRecord | null> {
+  const now = Date.now()
+  if (corpusCache && corpusCache.tag === tag && now - corpusCache.at < 60_000) return corpusCache.bm25
+  try {
+    if (!sqliteMod) sqliteMod = (await import("node:sqlite")) as AnyRecord
+    const hash = tag.replace(/^opencode_project_/, "")
+    const file = join(homedir(), ".opencode-mem", "data", "projects", `project_${hash}_shard_0.db`)
+    if (!existsSync(file)) return null
+    const db = new (sqliteMod.DatabaseSync as AnyRecord)(file, { readOnly: true })
+    let docs: AnyRecord[] = []
+    try {
+      docs = (db.prepare("SELECT id, content FROM memories WHERE deleted_at IS NULL").all() as AnyRecord[]).map(
+        (r) => ({ id: String(r.id), content: String(r.content ?? "") }),
+      )
+    } finally {
+      db.close()
+    }
+    const bm25 = buildBm25(docs, grams)
+    corpusCache = { tag, at: now, bm25 }
+    return bm25
+  } catch (error) {
+    log(`corpus db error: ${String(error)}`)
+    return null
+  }
+}
+
+async function retrieve(query: string, tag?: string | null): Promise<AnyRecord[]> {
+  const items = await search(query, CANDIDATES, tag)
+  if (EXPAND_DEPTH <= 0 || !tag || items.length === 0) return items
+  const edges = loadEdges()
+  if (!edges) return items
+
+  const seen = new Set(items.map((i) => String(i?.id ?? "")))
+  const add: string[] = []
+  let frontier = items.slice(0, EXPAND_SEEDS).map((i) => String(i?.id ?? ""))
+  for (let depth = 0; depth < EXPAND_DEPTH && add.length < EXPAND_MAX; depth++) {
+    const next: string[] = []
+    for (const id of frontier) {
+      for (const e of edges[id] ?? []) {
+        if (seen.has(e.id)) continue
+        seen.add(e.id)
+        add.push(e.id)
+        next.push(e.id)
+        if (add.length >= EXPAND_MAX) break
+      }
+      if (add.length >= EXPAND_MAX) break
+    }
+    frontier = next
+  }
+  if (add.length === 0) return items
+
+  const extra = await loadShardItems(tag, add)
+  if (extra.length === 0) return items
+  const records = loadStructured()
+  const NOISE_TYPES = new Set(["prompt", "skill", "message", "tool"])
+  const usable = extra.filter(
+    (i) => !NOISE_TYPES.has(String(i?.type ?? "memory")) && !records[String(i?.id ?? "")]?.validUntil,
+  )
+  // 补内容分：扩展项没有 /api/search 的 similarity，用本地 BM25（查询与文档同一套 2-gram）
+  const bm25 = await loadCorpus(tag)
+  if (bm25) {
+    const scores = normalizeScores(bm25.score(query) as Map<string, number>)
+    for (const it of usable) {
+      const v = scores.get(String(it.id ?? ""))
+      if (typeof v === "number") it.similarity = v
+    }
+  }
+  log(
+    `expand depth=${EXPAND_DEPTH} seeds=${EXPAND_SEEDS} added=${usable.length}/${add.length} ` +
+      `ids=${usable.map((i) => String(i.id).slice(-6)).join(",")}`,
+  )
+  return items.concat(usable)
 }
 
 // ---------------------------------------------------------------- 消息解析
@@ -502,7 +558,7 @@ export default Plugin.define({
         let st = sessions.get(sessionID)
         if (!st) {
           const anchor = stripInjected(texts[0])
-          const ranked = rank(await search(anchor, CANDIDATES, tag), anchor, loadEdges())
+          const ranked = rank(await retrieve(anchor, tag), anchor, loadEdges())
           const picked = ranked.slice(0, STABLE_K)
           const text = picked.length
             ? render(MARK_STABLE, picked, `${picked.length} 条（会话稳定块）`)
@@ -568,7 +624,7 @@ export default Plugin.define({
           return
         }
 
-        const ranked = rank(await search(query, CANDIDATES, tag), query, loadEdges())
+        const ranked = rank(await retrieve(query, tag), query, loadEdges())
 
         // ---- 锚点漂移检测：最相关的记忆连续 N 轮都不在稳定块里 → 按最近话题重锚
         const topId = String(ranked[0]?.item?.id ?? "")
@@ -577,7 +633,7 @@ export default Plugin.define({
 
         if (st.drift >= DRIFT_TURNS && st.reanchors < MAX_REANCHORS) {
           const newAnchor = `${st.lastQuery}\n${query}`.slice(-400)
-          const rebuilt = rank(await search(newAnchor, CANDIDATES, tag), newAnchor, loadEdges()).slice(0, STABLE_K)
+          const rebuilt = rank(await retrieve(newAnchor, tag), newAnchor, loadEdges()).slice(0, STABLE_K)
           const text = rebuilt.length
             ? render(MARK_STABLE, rebuilt, `${rebuilt.length} 条（会话稳定块·已重锚）`)
             : `${MARK_STABLE} 无匹配记忆`
@@ -639,7 +695,7 @@ export default Plugin.define({
           return
         }
 
-        const picked = rank(await search(anchor, CANDIDATES, tag), anchor, loadEdges()).slice(0, 5)
+        const picked = rank(await retrieve(anchor, tag), anchor, loadEdges()).slice(0, 5)
         if (picked.length === 0) {
           log(`compaction session=${sessionID} empty`)
           return
@@ -735,7 +791,10 @@ export default Plugin.define({
                 return { content: `拒绝写入：\n- ${problems.join("\n- ")}` }
               }
 
-              // 去重：写前先检索，≥0.75 视为重复，要求用 supersedes 明确取代
+              // 去重：写前先检索，≥0.95 视为重复，要求用 supersedes 明确取代。
+              // 阈值按当前模型标定：e5-small 下 49 条语料的「最近邻」最高才 0.912、
+              // 全量两两最高 0.967，旧阈值 0.75 会把所有写入都判成重复（实测 0.88/0.89 误拒）。
+              // 真重复（同文/几乎同文）≈1.0，0.95 既放行 0.912 以内的正常条目又能拦住真重复。
               try {
                 // 用全文而不是前缀：实测前缀会把重复度从 0.79 压到 0.72，阈值失效
                 const probe = content.slice(0, 300)
@@ -744,7 +803,7 @@ export default Plugin.define({
                 const sim = Number((top as AnyRecord)?.similarity ?? 0)
                 const topId = String((top as AnyRecord)?.id ?? "")
                 log(`dedupe probe: hits=${hits.length} top=${topId.slice(-6)} sim=${sim.toFixed(3)}`)
-                if (top && sim >= 0.75 && topId !== String(input.supersedes ?? "")) {
+                if (top && sim >= 0.95 && topId !== String(input.supersedes ?? "")) {
                   return {
                     content:
                       `拒绝写入：已有高度相似的记忆（sim=${sim.toFixed(2)}）${topId}\n` +

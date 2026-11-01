@@ -450,10 +450,115 @@ opencode_project_{sha256(`path:<normalized dir>`).slice(0,16)}
 | 2026-11-01 | 2.39.0 | 42 条 | 召回 10 vs 8；名次 10.21 vs 13.79 | 召回 11 vs 9；名次 2.87 vs 4.90 |
 | 2026-11-01 | 2.39.0 | **48 条**（prompt 噪声已清空、58 条软删） | 召回 **9 vs 8**；名次 **16.29 vs 19.07** | 召回 11 vs 9；名次 **3.33 vs 5.13** |
 | 2026-11-01 | 2.39.0 | **47 条**（+结构边记忆，另有 4 条其它会话写入） | 召回 **8 vs 8**；名次 **17.21 vs 18.93** | 召回 11 vs 9；名次 2.93 vs 4.90 |
+| 2026-11-01 | 2.39.0 | **51 条**（e5-small 384 维，λ=1，1 跳扩展 + BM25） | 召回 **10 vs 6**；名次 **9.71 vs 18.86** | 召回 **8 vs 6**；名次 **10.93 vs 12.13** |
+| 2026-11-01 | 2.39.0 | **51 条**（e5-small，λ=1，**2 跳扩展 + BM25**，现默认） | 召回 **11 vs 6**；名次 **2.93 vs 18.93** | 召回 **9 vs 6**；名次 **4.53 vs 12.13** |
 
 ## 十一、下一步
 
 1. **记忆到 50 条后跑 P1 验收**：可先用隔离分片造样本
 2. ~~写回：`kind/condition/links` 走上游 `metadata`~~ —— **已定 A 方案：不写上游库**，全部留在 sidecar，渲染时合并（见第六节「结构边 links」）。上游 `metadata` 里只有 `{"source":"api"}`，这是刻意保持的
 3. **生命周期软降权**（P4 简化版）：≥90 天未被召回且非 pin 的记忆，注入时降权但不删除。它是今天 gate 绝对名次恶化的根因，优先级高于 2 跳
-3. **2 跳图扩展**：现在只用了 1 跳权重（设计 4.3 的完整形态）
+3. **2 跳图扩展**：见第十二节，2026-11-01 已实现并实测
+
+## 十二、图扩展与多跳（2026-11-01）
+
+> 结论先写：**多跳本身不是必须的，"候选扩展 + 内容分补齐"才有收益；PPR 在本项目的近完全图上严重负收益。**
+> 默认参数：`MEMCTX_EXPAND=2`、`MEMCTX_GRAPHMODE=max`、`GRAPH_LAMBDA=1`、`graph.mjs --ratio 0.99`。
+
+### 12.1 文献要点（下次别再从头论证）
+
+| 结论 | 来源 |
+|---|---|
+| 多跳检索的主流形态是 **Personalized PageRank / 带剪枝的束搜索**，不是固定 k 跳 BFS | HippoRAG (NeurIPS'24) <https://arxiv.org/abs/2405.14831>；HippoRAG 2 (2025) <https://arxiv.org/abs/2502.14802> |
+| 跳数有饱和点：多数检索 4 轮内探索完，再加跳无收益；且它们给**边**也建索引、用伪查询筛边 | HopRAG (ACL Findings'25) <https://aclanthology.org/2025.findings-acl.97.pdf> |
+| 图**过密**会造成 information overload，稀疏/噪声图同样拖累检索 | GraphRAG Best Practices (SAGE 2026) <https://journals.sagepub.com/doi/full/10.3233/SSW260013> |
+| 在稠密候选子图上做消息传递会引入 **noise diffusion** | SPIMP-RAG (2026) <https://link.springer.com/article/10.1007/s44443-026-00999-7> |
+| 高维空间存在 **hubness**：少数点成为枢纽、k-NN 关系不对称，绝对阈值不可移植 | Radovanović et al., JMLR 2010 <https://www.jmlr.org/papers/volume11/radovanovic10a/radovanovic10a.pdf> |
+| 图传播可以优于单纯的 reranked dense retrieval，但前提是图上有可用的语义结构 | SG2RAG (2026) <https://arxiv.org/html/2610.15285v1> |
+
+对应到本项目：e5 下 51 条两两余弦 **最低 0.84**（近完全图），所以固定跳数 ≈ 扩散；hubness 解释了为什么 0.75 / 0.5 这类绝对阈值换模型后全部失灵。
+
+### 12.2 实现
+
+| 位置 | 内容 |
+|---|---|
+| `lib/rank.mjs` | `personalizedPageRank()`、`buildBm25()`、`normalizeScores()`，纯本地无依赖 |
+| `index.ts` `retrieve()` | API 候选 + 1/2 跳邻居（只读分片库按 id 取内容），扩展项用 **BM25** 补内容分 |
+| `index.ts` `rank()` | 图分支持 `max`（默认）与 `ppr` 两种模式，`MEMCTX_GRAPHMODE` 切换 |
+| `graph.mjs` | 新增**相对剪枝** `--ratio`（默认 0.99，按本节点最强边裁剪），并写入 neighbors.json |
+| `eval.mjs` / `gate.mjs` | `--expand/--gmode/--pd/--ps` 透传，默认值与线上一致 |
+
+开关：`MEMCTX_EXPAND=0|1|2`、`MEMCTX_EXPAND_SEEDS`、`MEMCTX_EXPAND_MAX`、`MEMCTX_GRAPHMODE=max|ppr`、`MEMCTX_PPR_DAMPING`、`MEMCTX_PPR_SEEDS`。
+
+### 12.3 实测（51 条，两套用例，K=3）
+
+| 配置 | 默认 14 例 | 盲测 15 例 |
+|---|---|---|
+| max, λ=1, 不扩展（旧默认） | 9；16.57 | 9；10.60 |
+| max, λ=0.5, 不扩展（旧线上参数） | 8；17.64 | **7；11.53（低于地板 8）** |
+| max, λ=0.75, 不扩展 | 9；16.93 | 9；11.13 |
+| **max, λ=1, 扩展 1（现默认）** | **10；9.71** | **8；10.93** |
+| max, λ=1, 扩展 2 | **11；2.93** | **9；4.53** |
+| ppr(0.85), 扩展 0 | 5；21.14 | **1；18.40** |
+| ppr(0.85), 扩展 2 | 7；7.79 | 2；12.20 |
+
+三个关键结论：
+
+1. **PPR 在本项目的图上不可用**：盲测召回从 9 掉到 1。原因是近完全图上质量被 hub 吸走，图分几乎与查询无关。实现保留、默认关闭，换图/换模型后可复测。
+2. **λ=0.5 是旧线上参数，实测不达标**（盲测 7/15 < 地板 8）；λ=0.75 与 1.0 都是 9/15，名次 1.0 更好 → 线上改回 **1.0**，并让 eval 默认与线上一致（之前 eval 默认 1、线上 0.5，闸门测的不是线上参数）。
+3. **扩展只有在补了内容分之后才有收益**：不补 BM25 时扩展只改平均名次、召回不动；补了 BM25 后默认 14 例 9→11、盲测维持 9。1 跳同时改善默认 (+1)、略降盲测 (-1)；**2 跳在两套用例上都更好**（11 / 9），下次升级可考虑把默认改成 2。
+
+### 12.4 换模型/换语料后的复测清单
+
+```powershell
+node graph.mjs --tag <tag>                      # 重新生成邻接表（含相对剪枝）
+node gate.mjs --dir <项目>                       # 线上默认配置
+node gate.mjs --no-default --cases fixtures/cases-blind.json --dir <项目>
+node gate.mjs --expand 0 --dir <项目>            # 对比扩展开关
+node gate.mjs --gmode ppr --dir <项目>           # 复测 PPR
+```
+
+判据只看 **召回**，平均名次随语料膨胀必然漂移；PPR 只有在图变稀疏（边权分布拉开、hub 度下降）后才值得再试。
+
+### 12.5 工程改造（2026-11-01，三件）
+
+1. **打分单一实现 `lib/score.mjs`**：`index.ts` 与 `eval.mjs` 以前各写一份，λ 就是这样分叉的（eval 1、线上 0.5）。现在权重、衰减、图分、MMR 全部只在这一处，两边只传参数。重构后两套 gate 数字与重构前完全一致（11/14；9/15），确认是纯搬家。
+2. **换模型防回归**：`switch-embedding.mjs` 迁移前记录每个分片的活跃/软删数，迁移后比对；软删变少就打印明细并以退出码 2 中止。加 `--restore-deleted` 会按 `*.pre-reembed-*.bak` 的 `deleted_at` 精确 `bulk-delete` 还原。另有 `--verify-only` 可随时查看各分片计数。
+3. **候选多样性（MMR）已实现、默认关闭**：`lib/score.mjs` 的 `diversify()` 用内容 2-gram Jaccard 做 MMR，`--dedup`/`MEMCTX_DEDUP` 控制强度（1=关闭）。实测（52 条）：
+
+| dedup | 默认 14 例 | 盲测 15 例 | 盲测 @8 |
+|---|---|---|---|
+| 1（关闭） | 11；2.93 | 9；4.53 | **12/15** |
+| 0.85 | 11；3.79 | 9；6.27 | 11/15 |
+| 0.7 | 11；4.36 | 8；7.40 | — |
+| 0.5 | 11；5.36 | 7（低于地板）；10.13 | — |
+
+**结论：无召回收益、名次变差，默认关闭。** 近重复清理没有想象中有效，原因是候选池里的"重复"在内容上仍有差异，强行去重会挤掉正确答案的近似副本。
+
+### 12.6 独立评估集 held-out（2026-11-01 建立，未使用）
+
+**文件**：`fixtures/heldout-2026-11.json`　**33 条**
+**sha256(文件)**：`6dd99b17770588ff…`　**建立时语料**：52 条
+**评估基线**：代码版本 `v0.2.0`（CHANGELOG 对应同一提交）
+
+**构成**：fact 10 / why 5 / supersede 5 / paraphrase 8 / multi-hop 2 / english 3
+
+**出题方式**：三个子代理（`glm-5.3-flash-free`、`deepseek-v4.1-flash`、默认 general），只给
+`fixtures/materials-2026-11-01.md`（52 条记忆的 id+正文导出），不给用例、不给参数、不看 `eval.mjs`。
+另有一批 mimo 输出未采用（速度原因，且 4/10 撞车/子串不唯一）。
+
+**机械校验**：`heldout-check.mjs`（`npm run heldout:check`）检查
+① `expect` 在活跃记忆里恰好命中 1 条；② 未软删、未 `validUntil` 取代；③ `targetId/q` 不重复；④ 层配比。
+合并时自动填 `targetId`。
+
+**使用规则（硬性）**：
+1. **只许在发布前跑一次**，跑完这套作废，下次发布必须换新集；
+2. **不许**用它选择/调整任何参数（λ、扩展、图模式、去重）；
+3. 结果无论好坏都记进本节，并注明日期、语料规模、模型。
+
+**命令**（发布时执行）：
+```powershell
+node gate.mjs --cases fixtures/heldout-2026-11.json --no-default --dir "<项目>"
+```
+
+`fixtures/materials-2026-11-01.md` 含全量记忆正文，仅本地使用，**不要提交/外发**。
