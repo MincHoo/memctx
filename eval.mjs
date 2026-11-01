@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { join, normalize } from "node:path"
+import { hubFactor } from "./lib/store.mjs"
 
 const API_BASE = "http://127.0.0.1:4747"
 const TOKEN = readFileSync(join(homedir(), ".opencode-mem", ".auth-token"), "utf-8").trim()
@@ -84,6 +85,19 @@ const NEIGHBORS = (() => {
   }
 })()
 
+// hub 抑制（与 index.ts 同一套系数，保证 eval 与线上行为一致）
+const GRAPH_HUB = (() => {
+  try {
+    const j = JSON.parse(readFileSync(join(import.meta.dirname, "data", "neighbors.json"), "utf-8"))
+    return { hub: j.hub ?? {}, total: Number(j.total ?? j.nodes ?? 0) || 0 }
+  } catch {
+    return { hub: {}, total: 0 }
+  }
+})()
+const HUB_ALPHA = Number(process.env.MEMCTX_HUB_ALPHA ?? "0")
+const HUB_TAU = Number(process.env.MEMCTX_HUB_TAU ?? "0.12")
+const hubOf = (id) => hubFactor(GRAPH_HUB.hub[String(id)] ?? 0, GRAPH_HUB.total, { alpha: HUB_ALPHA, tau: HUB_TAU })
+
 /** 两遍：先基础分，再用候选集内邻居补图分（与 index.ts 一致）。 */
 function rankOurs(items, qg) {
   const scored = items.map((item) => {
@@ -97,7 +111,7 @@ function rankOurs(items, qg) {
     const base = (W_CONTENT * content + (hasTags ? W_TAGS * tags : 0) + W_KEYWORD * keyword) / wSum
     const days = Math.max(0, (Date.now() - toMs(item.createdAt)) / 86400000)
     const decay = item.isPinned ? 1 : Math.pow(0.5, days / DECAY_HALF_LIFE_DAYS)
-    return { i: item, content, tags, keyword, hasTags, score: base * decay }
+    return { i: item, content, tags, keyword, hasTags, score: base * decay * hubOf(item.id) }
   })
 
   if (NEIGHBORS) {
@@ -115,7 +129,10 @@ function rankOurs(items, qg) {
       const wSum = W_CONTENT + (s.hasTags ? W_TAGS : 0) + W_KEYWORD + W_GRAPH
       const base =
         (W_CONTENT * s.content + (s.hasTags ? W_TAGS * s.tags : 0) + W_KEYWORD * s.keyword + W_GRAPH * g) / wSum
-      s.score = base * (s.i.isPinned ? 1 : Math.pow(0.5, Math.max(0, (Date.now() - toMs(s.i.createdAt)) / 86400000) / DECAY_HALF_LIFE_DAYS))
+      s.score =
+        base *
+        (s.i.isPinned ? 1 : Math.pow(0.5, Math.max(0, (Date.now() - toMs(s.i.createdAt)) / 86400000) / DECAY_HALF_LIFE_DAYS)) *
+        hubOf(s.i.id)
     }
   }
 
@@ -133,7 +150,7 @@ function ours(item, qg) {
   const base = (W_CONTENT * content + (hasTags ? W_TAGS * tags : 0) + W_KEYWORD * keyword) / wSum
   const days = Math.max(0, (Date.now() - toMs(item.createdAt)) / 86400000)
   const decay = item.isPinned ? 1 : Math.pow(0.5, days / DECAY_HALF_LIFE_DAYS)
-  return base * decay
+  return base * decay * hubOf(item.id)
 }
 
 // ---------------------------------------------------------------- 用例

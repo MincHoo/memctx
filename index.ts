@@ -13,7 +13,9 @@ import { Plugin } from "@opencode/plugin"
 import { readFileSync, appendFileSync, statSync, existsSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
-import { join, normalize } from "node:path"
+import { spawn } from "node:child_process"
+import { homedir } from "node:os"
+import { join, normalize, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   appendUsage,
@@ -21,6 +23,7 @@ import {
   loadRecords,
   loadUsage,
   formatLinks,
+  hubFactor,
   mergeEdges,
   normalizeLinks,
   upsertRecord,
@@ -57,6 +60,12 @@ const W_GRAPH = 0.15
 // 0.5 时召回@3 与 1.0 相同，但对「互相抬轿子」更保守。
 const GRAPH_LAMBDA = 0.5
 const W_SUM = W_CONTENT + W_TAGS + W_KEYWORD + W_GRAPH
+
+// hub 抑制：对「跟谁都像」的泛化记忆加乘性惩罚。
+// 实测（47 条语料，两套用例）：alpha=0.15/0.3/0.5 都让召回或平均名次变差（默认 9→8，盲测 11→11/10/9），
+// **负收益，默认关闭**；保留实现与数据，换语料后可用 MEMCTX_HUB_ALPHA 复测。
+const HUB_ALPHA = Number(process.env.MEMCTX_HUB_ALPHA ?? "0")
+const HUB_TAU = Number(process.env.MEMCTX_HUB_TAU ?? "0.12")
 
 const DECAY_HALF_LIFE_DAYS = 180
 
@@ -102,6 +111,8 @@ function loadEdges(): NeighborMap | null {
  * 重载会清空会话缓存，代价是一轮全量重算，所以这里刻意不让文件触发重载。
  */
 let cachedNeighbors: NeighborMap | null = null
+let cachedHub: Record<string, number> | null = null
+let cachedTotal = 0
 let cachedMtime = 0
 let checkedAt = 0
 
@@ -115,12 +126,22 @@ function loadNeighbors(): NeighborMap | null {
     const parsed = JSON.parse(readFileSync(NEIGHBOR_FILE, "utf-8"))
     const map = parsed?.neighbors
     cachedNeighbors = map && typeof map === "object" ? (map as NeighborMap) : null
+    cachedHub = parsed?.hub && typeof parsed.hub === "object" ? (parsed.hub as Record<string, number>) : null
+    cachedTotal = Number(parsed?.total ?? parsed?.nodes ?? 0) || 0
     cachedMtime = st.mtimeMs
   } catch {
     cachedNeighbors = null
+    cachedHub = null
+    cachedTotal = 0
     cachedMtime = 0
   }
   return cachedNeighbors
+}
+
+/** 当前记忆的 hub 密度惩罚系（1 = 不罚）。 */
+function hubOf(id: string): number {
+  if (!cachedHub || !cachedTotal) return 1
+  return hubFactor(cachedHub[id] ?? 0, cachedTotal, { alpha: HUB_ALPHA, tau: HUB_TAU })
 }
 
 // ---------------------------------------------------------------- 基础设施
@@ -250,7 +271,7 @@ function scoreItem(item: AnyRecord, queryGrams: Set<string>): Scored {
   const wSum = W_CONTENT + (hasTags ? W_TAGS : 0) + W_KEYWORD
   const base = (W_CONTENT * content + (hasTags ? W_TAGS * tags : 0) + W_KEYWORD * keyword) / wSum
 
-  return { item, content, tags, keyword, graph: 0, hasTags, hasGraph: false, decay, score: base * decay }
+  return { item, content, tags, keyword, graph: 0, hasTags, hasGraph: false, decay, score: base * decay * hubOf(String(item?.id ?? "")) }
 }
 
 /** 两遍：第一遍算基础分，第二遍用候选集内的邻居分补 graph_score。 */
@@ -276,7 +297,7 @@ function rank(items: AnyRecord[], query: string, neighbors: NeighborMap | null):
       (W_CONTENT * s.content + (s.hasTags ? W_TAGS * s.tags : 0) + W_KEYWORD * s.keyword + W_GRAPH * g) / wSum
     s.graph = g
     s.hasGraph = true
-    s.score = base * s.decay
+    s.score = base * s.decay * hubOf(String(s.item?.id ?? ""))
   }
   return scored.sort((a, b) => b.score - a.score)
 }
@@ -435,6 +456,30 @@ export default Plugin.define({
     }
     if (!tag) {
       log("WARN 没有匹配到项目分片 —— 检索会退回全局，可能混入别的项目；先跑一次写入或确认目录")
+    }
+
+    // 邻接表增量刷新：未覆盖的记忆够多（≥10 条或 ≥20%）才重算，否则脚本自己退出。
+    // 放后台跑，不阻塞首轮检索；失败只记日志，不影响对话。
+    if (tag && process.env.MEMCTX_GRAPH_REFRESH !== "0") {
+      try {
+        const child = spawn(
+          process.execPath,
+          [join(dirname(fileURLToPath(import.meta.url)), "graph.mjs"), "--if-stale", "--tag", tag],
+          { detached: true, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+        )
+        let out = ""
+        child.stdout?.on("data", (d) => (out += String(d)))
+        child.stderr?.on("data", (d) => (out += String(d)))
+        child.on("close", (code) => {
+          const line = out.trim().split("\n").filter(Boolean).pop() ?? ""
+          if (/^stale:|^fresh:/.test(line)) log(`graph refresh: ${line}`)
+          else if (code !== 0) log(`graph refresh failed: ${out.trim().slice(0, 200)}`)
+        })
+        child.on("error", (e) => log(`graph refresh spawn error: ${String(e)}`))
+        child.unref()
+      } catch (error) {
+        log(`graph refresh skipped: ${String(error)}`)
+      }
     }
 
     const sessions = new Map<string, SessionState>()

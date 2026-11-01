@@ -7,6 +7,8 @@
  * 用法：
  *   node graph.mjs                        # 自动选记忆最多的分片
  *   node graph.mjs --db <path>            # 指定分片
+ *   node graph.mjs --tag opencode_project_xxx   # 按项目 tag 选分片（多项目时务必用这个）
+ *   node graph.mjs --if-stale             # 只在「未覆盖的记忆 ≥10 条或 ≥20%」时才重算
  *   node graph.mjs --min 0.55 --top 5     # 边权阈值与邻居数
  *   node graph.mjs --report-only          # 不写 neighbors.json，只出报告
  *
@@ -15,7 +17,7 @@
  *   data/Review_<date>.md   P1 验收用的人工抽查报告
  */
 import { DatabaseSync } from "node:sqlite"
-import { readdirSync, writeFileSync, mkdirSync, statSync } from "node:fs"
+import { readdirSync, writeFileSync, mkdirSync, statSync, readFileSync, existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -39,11 +41,23 @@ const REPORT_ONLY = flag("report-only")
 const DB_ARG = opt("db", "")
 // 输出前缀：跑测试库时务必指定，否则会覆盖插件正在用的 neighbors.json
 const OUT_PREFIX = opt("out", "")
+// 项目 tag：opencode_project_<16 hex> → 精确锁定分片，避免多项目时选错库
+const TAG_ARG = opt("tag", "")
+const IF_STALE = flag("if-stale")
+// hub 判定阈值：与 ≥HUB_T 的其它记忆数量，用来识别「对什么都沾边」的泛化记忆
+const HUB_T = Number(opt("hub-t", 0.75))
+const STALE_MIN = 10
+const STALE_RATIO = 0.2
 
 // ---------------------------------------------------------------- 选库
 
 function pickShard() {
   if (DB_ARG) return DB_ARG
+  if (TAG_ARG) {
+    const hash = TAG_ARG.replace(/^opencode_project_/, "")
+    const file = join(SHARD_DIR, `project_${hash}_shard_0.db`)
+    return file
+  }
   const files = readdirSync(SHARD_DIR)
     .filter((f) => f.endsWith("_shard_0.db"))
     .map((f) => join(SHARD_DIR, f))
@@ -122,6 +136,32 @@ if (memories.length === 0) {
 const withVec = memories.filter((m) => m.vec)
 for (const m of withVec) m.norm = norm(m.vec)
 
+// --if-stale：只判「有多少条记忆还没被算过」，不够多就直接退出
+const NEIGHBOR_PATH = join(DATA_DIR, `${OUT_PREFIX}neighbors.json`)
+function loadExisting(path) {
+  try {
+    if (!existsSync(path)) return null
+    return JSON.parse(readFileSync(path, "utf-8"))
+  } catch {
+    return null
+  }
+}
+if (IF_STALE && !REPORT_ONLY) {
+  const existing = loadExisting(NEIGHBOR_PATH)
+  if (existing) {
+    const known = new Set(Object.keys(existing.neighbors ?? {}))
+    const missing = withVec.filter((m) => !known.has(m.id)).length
+    const ratio = withVec.length ? missing / withVec.length : 0
+    if (missing < STALE_MIN && ratio < STALE_RATIO) {
+      console.log(
+        `fresh: 未覆盖 ${missing}/${withVec.length}（阈值 ${STALE_MIN} 条或 ${Math.round(STALE_RATIO * 100)}%），跳过重算`,
+      )
+      process.exit(0)
+    }
+    console.log(`stale: 未覆盖 ${missing}/${withVec.length}，重算邻接表`)
+  }
+}
+
 const pairs = []
 for (let i = 0; i < withVec.length; i++) {
   for (let j = i + 1; j < withVec.length; j++) {
@@ -159,6 +199,18 @@ function round(n) {
 const edgeCount = Object.values(neighbors).reduce((s, l) => s + l.length, 0)
 const isolated = Object.entries(neighbors).filter(([, l]) => l.length === 0).length
 
+// hubness：与多少条其它记忆的相似度 ≥ HUB_T——「对什么都沾边」的泛化记忆会很高。
+// 只用于压制，不参与排序公式本身（排序里作为乘性惩罚，见 index.ts / eval.mjs）。
+const hub = {}
+for (const m of withVec) hub[m.id] = 0
+for (const p of pairs) {
+  if (p.w < HUB_T) break
+  hub[withVec[p.i].id]++
+  hub[withVec[p.j].id]++
+}
+const hubVals = Object.values(hub).filter((n) => n > 0).sort((a, b) => b - a)
+const hubTop = hubVals.slice(0, Math.max(1, Math.round(hubVals.length * 0.1)))
+
 // ---------------------------------------------------------------- 输出
 
 mkdirSync(DATA_DIR, { recursive: true })
@@ -174,6 +226,9 @@ if (!REPORT_ONLY) {
         minWeight: MIN_WEIGHT,
         topK: TOP_K,
         nodes: withVec.length,
+        total: withVec.length,
+        hubT: HUB_T,
+        hub,
         neighbors,
       },
       null,
@@ -223,5 +278,8 @@ console.log(`memories: ${memories.length} (with vector ${withVec.length})`)
 console.log(`edges:    ${edgeCount}  isolated: ${isolated}`)
 console.log(`weights:  p50=${q(0.5).toFixed(3)} p90=${q(0.9).toFixed(3)} p99=${q(0.99).toFixed(3)} max=${(pairs[0]?.w ?? 0).toFixed(3)}`)
 console.log(`pairs>=:  ${histogram()}`)
+console.log(
+  `hub>=${HUB_T}: 节点 ${hubVals.length} 个有邻居，前 10% 均值 ${hubTop.length ? (hubTop.reduce((a, b) => a + b, 0) / hubTop.length).toFixed(1) : 0}，最高 ${hubVals[0] ?? 0}`,
+)
 console.log(`report:   ${reportPath}`)
 if (!REPORT_ONLY) console.log(`graph:    ${join(DATA_DIR, `${OUT_PREFIX}neighbors.json`)}`)

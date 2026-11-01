@@ -84,6 +84,12 @@ check(
 )
 check("无 links 时渲染返回 null", store.formatLinks(undefined) === null)
 
+// hub 抑制系数
+check("hub 密度低不罚", store.hubFactor(3, 47) === 1, `f=${store.hubFactor(3, 47)}`)
+check("hub 密度高才罚", store.hubFactor(20, 47, { alpha: 0.3 }) < 1, `f=${store.hubFactor(20, 47, { alpha: 0.3 }).toFixed(3)}`)
+check("alpha=0 时恒为 1", store.hubFactor(47, 47, { alpha: 0 }) === 1)
+check("total=0 时不罚", store.hubFactor(5, 0) === 1)
+
 // 行为边：i、j 同轮出现 2 次，各自还在别的轮出现 → Jaccard = 2/(3+2-2)
 store.appendUsage("s1", "t1", ["x", "y"])
 store.appendUsage("s1", "t2", ["x", "y"])
